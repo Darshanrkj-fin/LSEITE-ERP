@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/check-gst-notifications",
+      "schedule": "0 6 * * 1"
+    },
+    {
+      "path": "/api/generate-subscription-cycles",
+      "schedule": "0 5 * * *"
+    }
+  ]
+}
