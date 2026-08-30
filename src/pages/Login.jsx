@@ -39,7 +39,8 @@ export function Login() {
         onSubmit={handleSubmit}
         className="w-full max-w-sm rounded-lg border border-slate-200 bg-white p-6 shadow-sm"
       >
-        <h1 className="mb-4 text-lg font-semibold text-slate-800">Sign in</h1>
+        <img src="/lseite-logo.jpg" alt="Lseite" className="mx-auto mb-4 h-16 w-16 rounded-full object-cover" />
+        <h1 className="mb-4 text-center text-lg font-semibold text-slate-800">Sign in</h1>
 
         <label className="mb-3 block text-sm">
           <span className="mb-1 block text-slate-600">Username</span>

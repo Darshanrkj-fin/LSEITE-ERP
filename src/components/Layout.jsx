@@ -92,7 +92,10 @@ export function Layout() {
   return (
     <div className="flex h-screen">
       <aside className="w-56 shrink-0 border-r border-slate-200 bg-slate-50 p-4">
-        <div className="mb-6 text-lg font-semibold text-slate-800">LSEITE ERP</div>
+        <div className="mb-6 flex items-center gap-2">
+          <img src="/lseite-logo.jpg" alt="Lseite" className="h-8 w-8 rounded-full object-cover" />
+          <span className="text-lg font-semibold text-slate-800">LSEITE ERP</span>
+        </div>
         <nav className="space-y-1">
           {visibleNavItems.map((item) => (
             <NavLink
