@@ -8,6 +8,7 @@ import { ItemMaster } from './pages/ItemMaster'
 import { PartyMaster } from './pages/PartyMaster'
 import { ChangePassword } from './pages/ChangePassword'
 import { TaxRates } from './pages/TaxRates'
+import { Quotes } from './pages/Quotes'
 import { SalesInvoices } from './pages/SalesInvoices'
 import { PurchaseInvoices } from './pages/PurchaseInvoices'
 import { ManageUsers } from './pages/ManageUsers'
@@ -56,6 +57,7 @@ function App() {
         <Route path="/inventory" element={<Inventory />} />
         <Route path="/parties" element={<PartyMaster />} />
         <Route path="/tax-rates" element={<TaxRates />} />
+        <Route path="/quotes/*" element={<Quotes />} />
         <Route path="/sales-invoices/*" element={<SalesInvoices />} />
         <Route path="/purchase-invoices/*" element={<PurchaseInvoices />} />
         <Route path="/bank-transactions" element={<BankTransactions />} />

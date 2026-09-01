@@ -15,9 +15,11 @@ A cloud-hosted accounting system for a single company (multi-branch ready) that 
   produced as finished goods)
 - Subscriptions: recurring customer plans with variable items per cycle (not a fixed box)
 
-Every phase below (Week 1 through Phase 19) is **built and live-tested**. This includes the full
-plan from the original TallyPrime feature-gap review — see section 5 for what each phase covers.
-Only the "Later" items at the end of section 5 remain, and only if the business's shape changes.
+Every phase through Phase 19 is **built and live-tested** — see section 5 for what each covers.
+Phases 20–24 (section 5b) are planned and under active construction: multi-branch schema
+readiness, quote management, expanded customer fields, advance/deposit payments, and a cohesive
+visual design system, drawn from a follow-up gap review. Only the "Later" items after section 5b
+remain out of scope beyond that, and only if the business's shape changes.
 
 ## 1. Tech Stack (all free-tier)
 | Layer | Choice | Why |
@@ -204,7 +206,7 @@ The core manufacturing gap — a real accounting-model change, not just a new sc
   directly (only `finalize_subscription_cycle()` can do that) — a client can create/edit/delete
   a `draft` cycle or flip it to `skipped`, nothing else.
 
-## 5. Phased Build Plan — Phases 13–18 (from the TallyPrime feature-gap review)
+## 5. Phased Build Plan — Phases 13–19 (from the TallyPrime feature-gap review)
 
 ### Phase 13 — Enhanced Reporting ✅
 - Item-wise profitability report (revenue from `invoice_line_items` on posted sales invoices, COGS
@@ -279,10 +281,124 @@ The core manufacturing gap — a real accounting-model change, not just a new sc
   not a filing-period one.
 
 Every phase above is now built and live-tested — this closes out the plan from the TallyPrime
-feature-gap review. Only the items below remain, and only if the business's shape changes.
+feature-gap review.
+
+## 5b. Phased Build Plan — Phases 20–24 (from a follow-up gap review)
+
+**Decisions already made — not open questions, don't re-litigate:**
+- Stack stays Vercel + Supabase (Postgres) — no Oracle VM, no self-hosting. An earlier
+  idurar/AntD-based plan is fully retired.
+- AntD is dropped — stay on Tailwind. Phase 24 is a design-token/CSS pass, not a framework swap.
+- Offline support is out of scope — it was considered as a safety net, not an actual need.
+- Nothing already built is being removed: R&D trials, Fund/Cash Flow reports, Audit Log,
+  Subscriptions, and Bank Reconciliation auto-suggest all stay exactly as they are.
+
+### Phase 20 — Multi-Branch Schema Retrofit ✅
+- New `branches` table (id, company_id, name, state_code, `is_default`), RLS scoped by company like
+  other structural tables. One branch is auto-seeded per existing company with `is_default = true`,
+  so a single-branch company's behavior is unchanged.
+- Nullable `branch_id` added to `invoices`, `payments`, `employees`, `payroll_runs`,
+  `production_entries`, `custom_orders`, `subscriptions` via a plain column `default
+  current_user_default_branch_id()` — every one of those tables' existing insert paths (RPCs and
+  plain client-side inserts alike) names its columns explicitly and never mentions `branch_id`, so
+  Postgres fills it in automatically with zero code changes anywhere. `quotes` (Phase 21) gets
+  `branch_id` built into its own table instead of a later ALTER, since it doesn't exist yet.
+- **No branch-switcher UI or per-branch report filtering yet** — this phase is purely schema
+  plumbing, done now because retrofitting `branch_id` after more tables/data exist is expensive.
+  The UI comes only once a second branch actually opens.
+- Tested: backfill confirmed (Lseite Private Limited got exactly one default branch with its own
+  state_code), and — since a service-role call has no `auth.uid()` and would give a false pass —
+  the `DEFAULT` was verified with a throwaway user signed in through a real session, inserting an
+  `employees` row with no `branch_id` supplied and confirming it came back populated with the
+  correct default branch id. Self-check per CLAUDE.md §7: `trial_balance()` still returns cleanly
+  and balanced (0 = 0 — no transactions exist yet to unbalance).
+
+### Phase 21 — Quote Management ✅ (fills a real gap in the original spec)
+- Workflow: customer asks for a price → formal quote sent → customer accepts → becomes an invoice.
+- New `quotes` / `quote_line_items` / `quote_number_counters` tables, shaped like
+  `invoices`/`invoice_line_items`/`invoice_number_counters`. Quote status flow: draft → sent →
+  accepted/rejected/expired → converted. Quotes are sales-only (no `type` column).
+- A quote has **no accounting impact**: `post_quote()` validates and writes the quote + line items
+  only (no `journal_entries`), calling the existing `resolve_tax_rate()`/`calculate_gst_split()` for
+  tax math — never reimplementing it, same as `post_invoice()`.
+- **Gap filled beyond the original spec**: `quotes` has no `revenue_expense_account_id` (a quote
+  never posts to the ledger, so it never needed one) — `convert_quote_to_invoice()` takes it as an
+  explicit argument instead, chosen by whoever converts the quote.
+- **`update_quote_status(p_quote_id, p_new_status)`** — the only client-facing way to change a
+  quote's status (sent/accepted/rejected/expired). Added because a plain client-side `UPDATE`
+  policy can't restrict which *columns* a request touches — RLS only gates rows — so "mark as sent"
+  and "silently rewrite grand_total" would otherwise be the same permission. Refuses to touch an
+  already-`converted` quote and can never set status to `converted` itself.
+- `convert_quote_to_invoice(p_quote_id, p_revenue_expense_account_id)` validates `status =
+  'accepted'` and not already converted, then calls the existing `post_invoice()` with the quote's
+  line items — reusing invoice posting, not duplicating it — using **today's date** (not the
+  quote's date) so the invoice correctly picks up whatever tax rate applies at the actual moment of
+  sale. Sets `quotes.converted_invoice_id` and flips status to `converted`.
+- Numbering reuses `financial_year_for()` with its own `QT/<financial_year>/00001`-style counter
+  table, so quote and invoice numbers never collide.
+- Quote PDF reuses `lib/invoicePdf.js`'s layout (extended with optional `heading`/`numberLabel`
+  params, defaulting to unchanged invoice behavior) via a new `api/quote-pdf.js`, labeled
+  "QUOTATION" with "Quote #" instead of "Invoice #."
+- New `src/pages/Quotes.jsx` router + `QuoteList.jsx`/`QuoteForm.jsx`/`QuoteDetail.jsx`, structured
+  like the existing invoice components, with status-transition buttons and a "Convert to Invoice"
+  action (revenue-account picker) on accepted quotes — admin/accountant only, same authorization
+  pattern as everywhere else.
+- Tested live end-to-end with throwaway data: posted a quote and confirmed **zero** `journal_entries`
+  exist (a quote must have no accounting impact), confirmed the same-state tax split (CGST+SGST) was
+  computed correctly, walked it through draft → sent → accepted, confirmed `update_quote_status`
+  rejects setting `status = 'converted'` directly, converted it and confirmed the resulting
+  invoice's journal entries balance exactly (debit = credit), and confirmed the quote's own status
+  flipped to `converted` with `converted_invoice_id` set. Also built the quote PDF directly to
+  confirm the reused layout renders correctly for a quote-shaped object. Self-check per CLAUDE.md
+  §7: `trial_balance()` still balanced after cleanup (0 = 0).
+- **A mistake caught and fixed during this phase's own test cleanup**: an overly broad `audit_log`
+  delete (`table_name = 'chart_of_accounts' AND changed_by_user IS NULL`) swept up the real
+  company's original 13 legitimate chart-of-accounts seed audit rows along with the test row, since
+  both matched the same filter. Caught immediately, and restored exactly (same ids, `record_id`s,
+  and `new_values`) from this session's own earlier record of that data — verified back to 13 rows
+  matching the original content.
+
+### Phase 22 — Customer Management Enhancements
+- Adds `phone`, `billing_address`, `shipping_address` to `parties` — nullable, loosely validated
+  contact/logistics fields, not financial data. Party Master's form/list updated to show and edit
+  them.
+
+### Phase 23 — Advance/Deposit Payments (optional, per custom order)
+- Not every custom order needs this — modeled as something staff can optionally attach, not a
+  mandatory step. An advance is a **liability** (the company owes goods or a refund) until the
+  final invoice is raised — it must never post straight to Accounts Receivable.
+- New system account role `customer_advances` (liability), seeded alongside the existing 13 system
+  accounts. New `customer_advances` table (company_id, custom_order_id, party_id, amount,
+  bank_account_id, advance_date, status: unapplied/applied/refunded, applied_invoice_id,
+  entry_group_id).
+- `post_customer_advance()` debits the chosen bank/cash account and credits `customer_advances` —
+  balances independently of any invoice.
+- `apply_advance_to_invoice(p_advance_id, p_invoice_id)` debits `customer_advances` and credits
+  Accounts Receivable for that invoice — kept as its own function rather than overloading
+  `post_payment()`'s meaning, since no new cash actually moves at apply-time.
+- `refund_customer_advance()` reverses the original posting (never edits it), for a custom order
+  that falls through after a deposit was taken.
+- UI: an optional "Advance Payment" action on `CustomOrders.jsx`'s detail view; any unapplied
+  advance shows as a selectable credit when raising the final invoice for that custom order.
+
+### Phase 24 — Design System / UI Polish (do last — cosmetic, touches no business logic)
+- Grounded in the actual Lseite logo (navy → teal/sage gradient mandala, gold accent ring, serif
+  "Lseite" wordmark) rather than default Tailwind gray — a global token fix, not a page-by-page
+  redesign or a framework swap.
+- New CSS custom properties for ink/teal/sage/gold/clay/paper/mist/line/muted colors and a
+  Fraunces (display) / Inter (sans) font pairing, applied via a global find/replace pass: page
+  `<h1>` titles get the display serif + ink color, secondary text goes muted, error text goes clay,
+  success/pending status badges get teal/gold tints, the sidebar goes ink with a teal left-border
+  on the active nav item.
+- Dense data tables are left structurally as-is — just the gray-scale tokens swap. No shadows on
+  every card, no ALL-CAPS stat labels, no decorative gradients spread across every table cell.
+
+Only the items below remain after Phase 24, and only if the business's shape changes.
 
 ### Later (not in current scope)
-- Multi-branch (`branch_id` column across tables, consolidated reports)
+- Multi-branch UI: branch switcher and consolidated multi-branch reports. Phase 20 makes the
+  `branch_id` columns exist and populate correctly, but only one branch is active per company —
+  build the switcher and cross-branch reporting once a second branch actually opens.
 - Multi-user granular permissions beyond admin/accountant/viewer + `can_manage_users`
 - E-invoicing (IRN/QR), e-way bills, TDS/TCS automation, auto GST 2A/2B reconciliation — all need
   a paid API/portal integration
@@ -292,7 +408,15 @@ feature-gap review. Only the items below remain, and only if the business's shap
   beyond the lightweight tag in Phase 11 — skip unless the business's shape changes (multiple
   locations, heavy cheque usage, etc.)
 
-## 6. Compliance Checkpoints (do not skip)
+## 6. Infrastructure / Platform Checkpoints (time-sensitive)
+- [ ] **Before October 30, 2026**: Supabase is requiring explicit Postgres grants for
+      PostgREST/Data-API access on free-tier projects from that date. Since this app talks to
+      Supabase entirely through `supabase-js` (which goes through PostgREST), check the Supabase
+      dashboard for whether this project needs the grants added, and add them ahead of the
+      deadline — otherwise the API can stop serving requests. A settings check, not development
+      work — doesn't need to wait for the phase order above.
+
+## 7. Compliance Checkpoints (do not skip)
 - [ ] Have a CA review the chart of accounts after Week 1
 - [ ] Have a CA review the GST calculation logic (CGST/SGST/IGST rules) after Week 1–2
 - [ ] Confirm current e-invoicing turnover threshold before assuming Phase "Later" isn't needed yet
@@ -301,7 +425,7 @@ feature-gap review. Only the items below remain, and only if the business's shap
       a CA/compliance professional — these are outside GST entirely and outside what this software
       (or TallyPrime's generic feature set) models at all
 
-## 7. Coding Agent Setup
+## 8. Coding Agent Setup
 This project uses **CLAUDE.md** (in the project root) to keep Claude Code on scope and prevent scope creep or over-engineering. See that file for working rules.
 
 This project also uses the **ponytail** plugin for Claude Code to keep the codebase minimal and avoid unnecessary dependencies/abstractions. Install it once, from inside Claude Code:

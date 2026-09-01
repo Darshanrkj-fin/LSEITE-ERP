@@ -18,6 +18,7 @@ const navItems = [
   { to: '/subscription-cycles', label: 'Subscription Cycles' },
   { to: '/parties', label: 'Party Master' },
   { to: '/tax-rates', label: 'Tax Rates' },
+  { to: '/quotes', label: 'Quotes' },
   { to: '/sales-invoices', label: 'Sales Invoices' },
   { to: '/purchase-invoices', label: 'Purchase Invoices' },
   { to: '/bank-transactions', label: 'Bank Transactions' },

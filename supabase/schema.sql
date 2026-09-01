@@ -2704,4 +2704,387 @@ as $$
   order by type, name;
 $$;
 
+-- ============================================================
+-- Phase 20: Multi-Branch Schema Retrofit
+-- Pure schema plumbing — no branch-switcher UI yet (ROADMAP.md 5b). Every
+-- table below gets a nullable branch_id that defaults to the caller's
+-- company's default branch via current_user_default_branch_id(), so every
+-- existing RPC (post_invoice, post_payment, post_production_entry,
+-- post_payroll_run) and every plain client-side insert (employees,
+-- custom_orders, subscriptions) picks it up automatically without any
+-- code changes, since none of them name branch_id in their column list.
+-- ============================================================
+
+create table public.branches (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  name text not null,
+  state_code text not null,
+  is_default boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+-- At most one default branch per company.
+create unique index branches_one_default_per_company
+  on public.branches (company_id)
+  where is_default;
+
+alter table public.branches enable row level security;
+
+create policy branches_select on public.branches
+  for select using (company_id = public.current_user_company_id());
+create policy branches_write on public.branches
+  for insert with check (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy branches_update on public.branches
+  for update using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+
+-- One-time backfill: every company that existed before this migration gets
+-- exactly one default branch, named after the company, using its own
+-- state_code. Safe to run more than once (a company that already has a
+-- default branch is skipped).
+do $$
+declare
+  c record;
+begin
+  for c in select id, name, state_code from public.companies loop
+    if not exists (
+      select 1 from public.branches where company_id = c.id and is_default
+    ) then
+      insert into public.branches (company_id, name, state_code, is_default)
+      values (c.id, c.name, c.state_code, true);
+    end if;
+  end loop;
+end;
+$$;
+
+-- Resolves the caller's company's default branch — used only as a column
+-- DEFAULT below, so branch_id populates itself on any insert that doesn't
+-- explicitly set it. Same security-definer pattern as
+-- current_user_company_id(), scoped the same way.
+create function public.current_user_default_branch_id()
+returns uuid
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select id from public.branches
+  where company_id = public.current_user_company_id() and is_default
+  limit 1;
+$$;
+
+alter table public.invoices add column branch_id uuid
+  references public.branches (id) default public.current_user_default_branch_id();
+alter table public.payments add column branch_id uuid
+  references public.branches (id) default public.current_user_default_branch_id();
+alter table public.employees add column branch_id uuid
+  references public.branches (id) default public.current_user_default_branch_id();
+alter table public.payroll_runs add column branch_id uuid
+  references public.branches (id) default public.current_user_default_branch_id();
+alter table public.production_entries add column branch_id uuid
+  references public.branches (id) default public.current_user_default_branch_id();
+alter table public.custom_orders add column branch_id uuid
+  references public.branches (id) default public.current_user_default_branch_id();
+alter table public.subscriptions add column branch_id uuid
+  references public.branches (id) default public.current_user_default_branch_id();
+
 grant execute on function public.fund_flow_summary(date, date) to authenticated;
+
+-- ============================================================
+-- Phase 21: Quote Management
+-- A quote has NO accounting impact — post_quote() never touches
+-- journal_entries. Tax math is never reimplemented: every line calls the
+-- same resolve_tax_rate()/calculate_gst_split() post_invoice() already
+-- uses. Quotes are sales-only (no "type" column, unlike invoices) since
+-- the workflow is always "quote a customer," never a vendor.
+-- ============================================================
+
+create table public.quotes (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  branch_id uuid references public.branches (id) default public.current_user_default_branch_id(),
+  party_id uuid not null references public.parties (id),
+  quote_number text not null,
+  financial_year text not null,
+  quote_date date not null,
+  valid_until date,
+  status text not null default 'draft'
+    check (status in ('draft', 'sent', 'accepted', 'rejected', 'expired', 'converted')),
+  converted_invoice_id uuid references public.invoices (id),
+  subtotal numeric(14, 2) not null default 0,
+  cgst_total numeric(14, 2) not null default 0,
+  sgst_total numeric(14, 2) not null default 0,
+  igst_total numeric(14, 2) not null default 0,
+  grand_total numeric(14, 2) not null default 0,
+  custom_order_id uuid references public.custom_orders (id),
+  created_at timestamptz not null default now(),
+  constraint quotes_unique_number unique (company_id, financial_year, quote_number),
+  -- Same discipline as invoices_totals_consistent: the header must always
+  -- equal the sum of the (already-rounded) line amounts.
+  constraint quotes_totals_consistent check (grand_total = subtotal + cgst_total + sgst_total + igst_total)
+);
+
+create table public.quote_line_items (
+  id uuid primary key default gen_random_uuid(),
+  quote_id uuid not null references public.quotes (id),
+  item_id uuid not null references public.items (id),
+  hsn_sac_code text not null,
+  quantity numeric(14, 2) not null,
+  rate numeric(14, 2) not null,
+  taxable_value numeric(14, 2) not null,
+  tax_rate numeric(5, 2) not null,
+  cgst_amount numeric(14, 2) not null default 0,
+  sgst_amount numeric(14, 2) not null default 0,
+  igst_amount numeric(14, 2) not null default 0,
+  line_total numeric(14, 2) not null
+);
+
+-- Separate counter from invoice_number_counters so quote and invoice
+-- numbers can never collide, same atomic on-conflict pattern.
+create table public.quote_number_counters (
+  company_id uuid not null references public.companies (id),
+  financial_year text not null,
+  next_number integer not null default 1,
+  primary key (company_id, financial_year)
+);
+
+alter table public.quotes enable row level security;
+alter table public.quote_line_items enable row level security;
+alter table public.quote_number_counters enable row level security;
+
+create policy quotes_select on public.quotes
+  for select using (company_id = public.current_user_company_id());
+
+create policy quote_line_items_select on public.quote_line_items
+  for select using (
+    exists (select 1 from public.quotes q where q.id = quote_id and q.company_id = public.current_user_company_id())
+  );
+
+-- quote_number_counters: RLS enabled, no policies — touched only inside
+-- post_quote(), same as invoice_number_counters.
+
+create or replace function public.post_quote(
+  p_party_id uuid,
+  p_quote_date date,
+  p_line_items jsonb,
+  p_valid_until date default null,
+  p_custom_order_id uuid default null
+)
+returns public.quotes
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_seller_state_code text;
+  v_buyer_state_code text;
+  v_fy text;
+  v_seq int;
+  v_quote_number text;
+  v_quote public.quotes;
+  v_subtotal numeric(14, 2) := 0;
+  v_cgst numeric(14, 2) := 0;
+  v_sgst numeric(14, 2) := 0;
+  v_igst numeric(14, 2) := 0;
+  v_grand numeric(14, 2);
+  v_line jsonb;
+  v_item record;
+  v_tax_rate numeric;
+  v_split record;
+  v_taxable numeric(14, 2);
+  v_line_cgst numeric(14, 2);
+  v_line_sgst numeric(14, 2);
+  v_line_igst numeric(14, 2);
+  v_line_total numeric(14, 2);
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to create quotes.';
+  end if;
+
+  select state_code into v_seller_state_code from public.companies where id = v_company_id;
+
+  select state_code into v_buyer_state_code
+    from public.parties
+    where id = p_party_id and company_id = v_company_id and type = 'customer';
+  if v_buyer_state_code is null then
+    raise exception 'Party not found, not in your company, or not a customer.';
+  end if;
+
+  if jsonb_array_length(p_line_items) = 0 then
+    raise exception 'A quote needs at least one line item.';
+  end if;
+
+  if p_custom_order_id is not null and not exists (
+    select 1 from public.custom_orders where id = p_custom_order_id and company_id = v_company_id
+  ) then
+    raise exception 'Custom order not found in your company.';
+  end if;
+
+  v_fy := public.financial_year_for(p_quote_date);
+
+  insert into public.quote_number_counters (company_id, financial_year, next_number)
+  values (v_company_id, v_fy, 2)
+  on conflict (company_id, financial_year)
+    do update set next_number = quote_number_counters.next_number + 1
+  returning next_number - 1 into v_seq;
+
+  v_quote_number := 'QT/' || v_fy || '/' || lpad(v_seq::text, 5, '0');
+
+  insert into public.quotes (
+    company_id, party_id, quote_number, financial_year, quote_date, valid_until, custom_order_id
+  ) values (
+    v_company_id, p_party_id, v_quote_number, v_fy, p_quote_date, p_valid_until, p_custom_order_id
+  ) returning * into v_quote;
+
+  for v_line in select * from jsonb_array_elements(p_line_items)
+  loop
+    select id, hsn_sac_code into v_item
+      from public.items
+      where id = (v_line->>'item_id')::uuid and company_id = v_company_id;
+    if not found then
+      raise exception 'Item % not found in your company.', v_line->>'item_id';
+    end if;
+
+    v_tax_rate := public.resolve_tax_rate(v_item.hsn_sac_code, p_quote_date);
+    if v_tax_rate is null then
+      raise exception 'No tax rate found for HSN/SAC % as of %.', v_item.hsn_sac_code, p_quote_date;
+    end if;
+
+    v_taxable := round((v_line->>'quantity')::numeric * (v_line->>'rate')::numeric, 2);
+
+    select * into v_split from public.calculate_gst_split(v_seller_state_code, v_buyer_state_code, v_taxable, v_tax_rate);
+    v_line_cgst := v_split.cgst;
+    v_line_sgst := v_split.sgst;
+    v_line_igst := v_split.igst;
+    v_line_total := v_taxable + v_line_cgst + v_line_sgst + v_line_igst;
+
+    insert into public.quote_line_items (
+      quote_id, item_id, hsn_sac_code, quantity, rate, taxable_value, tax_rate,
+      cgst_amount, sgst_amount, igst_amount, line_total
+    ) values (
+      v_quote.id, v_item.id, v_item.hsn_sac_code, (v_line->>'quantity')::numeric, (v_line->>'rate')::numeric,
+      v_taxable, v_tax_rate, v_line_cgst, v_line_sgst, v_line_igst, v_line_total
+    );
+
+    v_subtotal := v_subtotal + v_taxable;
+    v_cgst := v_cgst + v_line_cgst;
+    v_sgst := v_sgst + v_line_sgst;
+    v_igst := v_igst + v_line_igst;
+  end loop;
+
+  v_grand := v_subtotal + v_cgst + v_sgst + v_igst;
+
+  update public.quotes
+    set subtotal = v_subtotal, cgst_total = v_cgst, sgst_total = v_sgst, igst_total = v_igst, grand_total = v_grand
+    where id = v_quote.id
+    returning * into v_quote;
+
+  return v_quote;
+end;
+$$;
+
+grant execute on function public.post_quote(uuid, date, jsonb, date, uuid) to authenticated;
+
+-- Status transitions only — deliberately the only client-facing way to
+-- change a quote's status, since a plain client-side UPDATE policy can't
+-- restrict which COLUMNS a request touches (RLS only gates which ROWS).
+-- Without this, "mark as sent" and "silently rewrite grand_total" would be
+-- the same permission. Never allowed to touch a converted quote, and never
+-- allowed to set status to 'converted' itself — only
+-- convert_quote_to_invoice() can do that.
+create function public.update_quote_status(p_quote_id uuid, p_new_status text)
+returns public.quotes
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_quote public.quotes;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to update quotes.';
+  end if;
+
+  if p_new_status not in ('sent', 'accepted', 'rejected', 'expired') then
+    raise exception 'Invalid status: %. Use convert_quote_to_invoice() to convert.', p_new_status;
+  end if;
+
+  select * into v_quote from public.quotes where id = p_quote_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Quote not found in your company.';
+  end if;
+  if v_quote.status = 'converted' then
+    raise exception 'This quote has already been converted to an invoice and can no longer be changed.';
+  end if;
+
+  update public.quotes set status = p_new_status where id = p_quote_id returning * into v_quote;
+  return v_quote;
+end;
+$$;
+
+grant execute on function public.update_quote_status(uuid, text) to authenticated;
+
+-- Converts an accepted quote into a real posted invoice by calling the
+-- existing post_invoice() — reusing invoice posting rather than
+-- duplicating it. Uses TODAY's date for the invoice (not the quote's own
+-- date), so it correctly picks up whatever tax rate actually applies at
+-- the moment of sale via post_invoice()'s own resolve_tax_rate() call.
+-- p_revenue_expense_account_id is required here (not stored on the quote
+-- itself, since a quote has no ledger account until it becomes a real
+-- sale) — chosen by whoever converts it, same as posting any sales invoice.
+create function public.convert_quote_to_invoice(p_quote_id uuid, p_revenue_expense_account_id uuid)
+returns public.invoices
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_quote public.quotes;
+  v_line_items jsonb;
+  v_invoice public.invoices;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to convert quotes.';
+  end if;
+
+  select * into v_quote from public.quotes where id = p_quote_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Quote not found in your company.';
+  end if;
+  if v_quote.status <> 'accepted' then
+    raise exception 'Only an accepted quote can be converted to an invoice (current status: %).', v_quote.status;
+  end if;
+  if v_quote.converted_invoice_id is not null then
+    raise exception 'This quote has already been converted.';
+  end if;
+
+  select jsonb_agg(jsonb_build_object('item_id', item_id, 'quantity', quantity, 'rate', rate))
+    into v_line_items
+    from public.quote_line_items
+    where quote_id = p_quote_id;
+
+  v_invoice := public.post_invoice(
+    'sales', v_quote.party_id, current_date, p_revenue_expense_account_id, v_line_items, v_quote.custom_order_id
+  );
+
+  update public.quotes
+    set status = 'converted', converted_invoice_id = v_invoice.id
+    where id = p_quote_id;
+
+  return v_invoice;
+end;
+$$;
+
+grant execute on function public.convert_quote_to_invoice(uuid, uuid) to authenticated;
