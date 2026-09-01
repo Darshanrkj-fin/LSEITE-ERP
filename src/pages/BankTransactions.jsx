@@ -20,15 +20,18 @@ export function BankTransactions() {
   const [editTxn, setEditTxn] = useState(emptyTxn)
   const [savingEdit, setSavingEdit] = useState(false)
 
-  const load = async () => {
-    setLoading(true)
+  // silent=true skips the loading flag — used after an import, so the
+  // ImportStatementSection result summary isn't unmounted mid-display by
+  // the "if (loading) return <p>Loading…</p>" guard below.
+  const load = async ({ silent } = {}) => {
+    if (!silent) setLoading(true)
     const { data, error: fetchError } = await supabase
       .from('bank_transactions')
       .select('*')
       .order('transaction_date', { ascending: false })
     if (fetchError) setError(fetchError.message)
     else setTxns(data)
-    setLoading(false)
+    if (!silent) setLoading(false)
   }
 
   useEffect(() => {
@@ -105,7 +108,13 @@ export function BankTransactions() {
 
       {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
-      {canEdit && <ImportStatementSection companyId={profile.company_id} existingTxns={txns} onImported={load} />}
+      {canEdit && (
+        <ImportStatementSection
+          companyId={profile.company_id}
+          existingTxns={txns}
+          onImported={() => load({ silent: true })}
+        />
+      )}
 
       <table className="mb-6 w-full text-sm">
         <thead>
