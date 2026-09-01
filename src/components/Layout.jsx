@@ -5,42 +5,84 @@ import { supabase } from '../lib/supabaseClient'
 
 const NOTIFICATION_POLL_MS = 5 * 60 * 1000
 
-const navItems = [
-  { to: '/', label: 'Dashboard' },
-  { to: '/company', label: 'Company Profile' },
-  { to: '/chart-of-accounts', label: 'Chart of Accounts' },
-  { to: '/items', label: 'Item Master' },
-  { to: '/inventory', label: 'Inventory' },
-  { to: '/production-entry', label: 'Production Entry' },
-  { to: '/rnd-trial', label: 'R&D Trial' },
-  { to: '/custom-orders', label: 'Custom Orders' },
-  { to: '/subscriptions', label: 'Subscriptions' },
-  { to: '/subscription-cycles', label: 'Subscription Cycles' },
-  { to: '/parties', label: 'Party Master' },
-  { to: '/tax-rates', label: 'Tax Rates' },
-  { to: '/quotes', label: 'Quotes' },
-  { to: '/sales-invoices', label: 'Sales Invoices' },
-  { to: '/purchase-invoices', label: 'Purchase Invoices' },
-  { to: '/bank-transactions', label: 'Bank Transactions' },
-  { to: '/reconciliation', label: 'Reconciliation' },
-  { to: '/journal-register', label: 'Journal Register' },
-  { to: '/ledger', label: 'Ledger' },
-  { to: '/trial-balance', label: 'Trial Balance' },
-  { to: '/profit-and-loss', label: 'Profit & Loss' },
-  { to: '/balance-sheet', label: 'Balance Sheet' },
-  { to: '/cash-flow', label: 'Cash Flow' },
-  { to: '/fund-flow', label: 'Fund Flow' },
-  { to: '/sales-register', label: 'Sales Register' },
-  { to: '/gst-summary', label: 'GST Summary' },
-  { to: '/item-profitability', label: 'Item Profitability' },
-  { to: '/stock-valuation', label: 'Stock Valuation' },
-  { to: '/batch-expiry-report', label: 'Batch / Expiry Report' },
-  { to: '/employees', label: 'Employee Master' },
-  { to: '/run-payroll', label: 'Run Payroll' },
-  { to: '/payroll-register', label: 'Payroll Register' },
-  { to: '/gst-alerts', label: 'GST Alerts' },
-  { to: '/audit-log', label: 'Audit Log', requiresAdmin: true },
-  { to: '/manage-users', label: 'Manage Users', requiresManageUsers: true },
+// Grouped so a 35-item sidebar reads as sections to scan, not one long
+// undifferentiated scroll — findability, not just page height.
+const navGroups = [
+  { label: null, items: [{ to: '/', label: 'Dashboard' }] },
+  {
+    label: 'Setup',
+    items: [
+      { to: '/company', label: 'Company Profile' },
+      { to: '/chart-of-accounts', label: 'Chart of Accounts' },
+      { to: '/tax-rates', label: 'Tax Rates' },
+    ],
+  },
+  {
+    label: 'Masters',
+    items: [
+      { to: '/items', label: 'Item Master' },
+      { to: '/parties', label: 'Party Master' },
+      { to: '/employees', label: 'Employee Master' },
+    ],
+  },
+  {
+    label: 'Manufacturing',
+    items: [
+      { to: '/inventory', label: 'Inventory' },
+      { to: '/production-entry', label: 'Production Entry' },
+      { to: '/rnd-trial', label: 'R&D Trial' },
+      { to: '/custom-orders', label: 'Custom Orders' },
+    ],
+  },
+  {
+    label: 'Sales',
+    items: [
+      { to: '/quotes', label: 'Quotes' },
+      { to: '/sales-invoices', label: 'Sales Invoices' },
+      { to: '/subscriptions', label: 'Subscriptions' },
+      { to: '/subscription-cycles', label: 'Subscription Cycles' },
+    ],
+  },
+  {
+    label: 'Purchases & Banking',
+    items: [
+      { to: '/purchase-invoices', label: 'Purchase Invoices' },
+      { to: '/bank-transactions', label: 'Bank Transactions' },
+      { to: '/reconciliation', label: 'Reconciliation' },
+    ],
+  },
+  {
+    label: 'Reports',
+    items: [
+      { to: '/journal-register', label: 'Journal Register' },
+      { to: '/ledger', label: 'Ledger' },
+      { to: '/trial-balance', label: 'Trial Balance' },
+      { to: '/profit-and-loss', label: 'Profit & Loss' },
+      { to: '/balance-sheet', label: 'Balance Sheet' },
+      { to: '/cash-flow', label: 'Cash Flow' },
+      { to: '/fund-flow', label: 'Fund Flow' },
+      { to: '/sales-register', label: 'Sales Register' },
+      { to: '/gst-summary', label: 'GST Summary' },
+      { to: '/item-profitability', label: 'Item Profitability' },
+      { to: '/stock-valuation', label: 'Stock Valuation' },
+      { to: '/batch-expiry-report', label: 'Batch / Expiry Report' },
+    ],
+  },
+  {
+    label: 'Payroll',
+    items: [
+      { to: '/run-payroll', label: 'Run Payroll' },
+      { to: '/payroll-register', label: 'Payroll Register' },
+    ],
+  },
+  {
+    label: 'Admin',
+    items: [
+      { to: '/gst-alerts', label: 'GST Alerts' },
+      { to: '/audit-log', label: 'Audit Log', requiresAdmin: true },
+      { to: '/manage-users', label: 'Manage Users', requiresManageUsers: true },
+    ],
+  },
 ]
 
 function NotificationBell() {
@@ -84,11 +126,16 @@ function NotificationBell() {
 
 export function Layout() {
   const { username, profile, signOut } = useAuth()
-  const visibleNavItems = navItems.filter((item) => {
-    if (item.requiresManageUsers) return profile?.role === 'admin' && profile?.can_manage_users
-    if (item.requiresAdmin) return profile?.role === 'admin'
-    return true
-  })
+  const visibleNavGroups = navGroups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => {
+        if (item.requiresManageUsers) return profile?.role === 'admin' && profile?.can_manage_users
+        if (item.requiresAdmin) return profile?.role === 'admin'
+        return true
+      }),
+    }))
+    .filter((group) => group.items.length > 0)
 
   return (
     <div className="flex h-screen">
@@ -97,22 +144,31 @@ export function Layout() {
           <img src="/lseite-logo.jpg" alt="Lseite" className="h-8 w-8 rounded-full object-cover" />
           <span className="font-display text-lg font-semibold text-white">LSEITE ERP</span>
         </div>
-        <nav className="space-y-1">
-          {visibleNavItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === '/'}
-              className={({ isActive }) =>
-                `block rounded px-3 py-2 text-sm ${
-                  isActive
-                    ? 'border-l-2 border-teal bg-white/10 text-white'
-                    : 'text-white/70 hover:bg-white/10'
-                }`
-              }
-            >
-              {item.label}
-            </NavLink>
+        <nav className="space-y-4">
+          {visibleNavGroups.map((group) => (
+            <div key={group.label ?? 'top'}>
+              {group.label && (
+                <p className="mb-1 px-3 text-xs font-semibold tracking-wide text-white/40 uppercase">{group.label}</p>
+              )}
+              <div className="space-y-0.5">
+                {group.items.map((item) => (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    end={item.to === '/'}
+                    className={({ isActive }) =>
+                      `block rounded px-3 py-1.5 text-sm ${
+                        isActive
+                          ? 'border-l-2 border-teal bg-white/10 text-white'
+                          : 'text-white/70 hover:bg-white/10'
+                      }`
+                    }
+                  >
+                    {item.label}
+                  </NavLink>
+                ))}
+              </div>
+            </div>
           ))}
         </nav>
       </aside>
