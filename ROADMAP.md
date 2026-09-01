@@ -358,10 +358,16 @@ feature-gap review.
   and `new_values`) from this session's own earlier record of that data — verified back to 13 rows
   matching the original content.
 
-### Phase 22 — Customer Management Enhancements
+### Phase 22 — Customer Management Enhancements ✅
 - Adds `phone`, `billing_address`, `shipping_address` to `parties` — nullable, loosely validated
-  contact/logistics fields, not financial data. Party Master's form/list updated to show and edit
-  them.
+  contact/logistics fields, not financial data. `PartyMaster.jsx`'s existing flat list + inline-edit
+  table (same pattern as `ChartOfAccounts.jsx`/`ItemMaster.jsx`) extended with the three new columns
+  as single-line inputs, matching how `CompanyProfile.jsx` already handles its own `address` field
+  rather than introducing a new multi-line/textarea pattern.
+- Tested live: added a party with phone/billing/shipping populated, confirmed it saved and
+  round-tripped correctly; edited it and confirmed the update persisted; added a second party with
+  all three fields left blank and confirmed they store as `null` (not empty strings). Self-check
+  per CLAUDE.md §7: `trial_balance()` still balances after cleanup (0 = 0).
 
 ### Phase 23 — Advance/Deposit Payments (optional, per custom order)
 - Not every custom order needs this — modeled as something staff can optionally attach, not a

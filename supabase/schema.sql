@@ -3088,3 +3088,14 @@ end;
 $$;
 
 grant execute on function public.convert_quote_to_invoice(uuid, uuid) to authenticated;
+
+-- ============================================================
+-- Phase 22: Customer Management Enhancements
+-- Nullable, loosely validated contact/logistics fields — not financial
+-- data, so this doesn't fall under the "never cut corners" validation
+-- rule (that's reserved for GSTIN/amounts/dates/tax calculations).
+-- ============================================================
+
+alter table public.parties add column phone text;
+alter table public.parties add column billing_address text;
+alter table public.parties add column shipping_address text;
