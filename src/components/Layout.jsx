@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabaseClient'
 
@@ -124,8 +124,20 @@ function NotificationBell() {
   )
 }
 
+// Which group (by label) contains the current path — used to auto-open
+// the relevant section and keep the rest collapsed to one line each.
+function activeGroupLabel(pathname, groups) {
+  for (const group of groups) {
+    if (group.items.some((item) => (item.to === '/' ? pathname === '/' : pathname.startsWith(item.to)))) {
+      return group.label
+    }
+  }
+  return null
+}
+
 export function Layout() {
   const { username, profile, signOut } = useAuth()
+  const location = useLocation()
   const visibleNavGroups = navGroups
     .map((group) => ({
       ...group,
@@ -137,6 +149,16 @@ export function Layout() {
     }))
     .filter((group) => group.items.length > 0)
 
+  const [openGroup, setOpenGroup] = useState(() => activeGroupLabel(location.pathname, visibleNavGroups))
+
+  // Following a link (including via browser back/forward) should always
+  // reveal the section it belongs to, even if the user had collapsed it.
+  useEffect(() => {
+    const label = activeGroupLabel(location.pathname, visibleNavGroups)
+    if (label) setOpenGroup(label)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname])
+
   return (
     <div className="flex h-screen">
       <aside className="w-56 shrink-0 overflow-y-auto bg-ink p-4">
@@ -144,32 +166,66 @@ export function Layout() {
           <img src="/lseite-logo.jpg" alt="Lseite" className="h-8 w-8 rounded-full object-cover" />
           <span className="font-display text-lg font-semibold text-white">LSEITE ERP</span>
         </div>
-        <nav className="space-y-4">
-          {visibleNavGroups.map((group) => (
-            <div key={group.label ?? 'top'}>
-              {group.label && (
-                <p className="mb-1 px-3 text-xs font-semibold tracking-wide text-white/40 uppercase">{group.label}</p>
-              )}
-              <div className="space-y-0.5">
-                {group.items.map((item) => (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    end={item.to === '/'}
-                    className={({ isActive }) =>
-                      `block rounded px-3 py-1.5 text-sm ${
-                        isActive
-                          ? 'border-l-2 border-teal bg-white/10 text-white'
-                          : 'text-white/70 hover:bg-white/10'
-                      }`
-                    }
-                  >
-                    {item.label}
-                  </NavLink>
-                ))}
+        <nav className="space-y-1">
+          {visibleNavGroups.map((group) => {
+            if (!group.label) {
+              // The ungrouped top entry (Dashboard) — always visible, no toggle.
+              return (
+                <div key="top" className="mb-3 space-y-0.5">
+                  {group.items.map((item) => (
+                    <NavLink
+                      key={item.to}
+                      to={item.to}
+                      end={item.to === '/'}
+                      className={({ isActive }) =>
+                        `block rounded px-3 py-1.5 text-sm ${
+                          isActive
+                            ? 'border-l-2 border-teal bg-white/10 text-white'
+                            : 'text-white/70 hover:bg-white/10'
+                        }`
+                      }
+                    >
+                      {item.label}
+                    </NavLink>
+                  ))}
+                </div>
+              )
+            }
+
+            const isOpen = openGroup === group.label
+            return (
+              <div key={group.label}>
+                <button
+                  type="button"
+                  onClick={() => setOpenGroup(isOpen ? null : group.label)}
+                  className="flex w-full items-center justify-between rounded px-3 py-1.5 text-xs font-semibold tracking-wide text-white/40 uppercase hover:text-white/70"
+                >
+                  {group.label}
+                  <span className={`transition-transform ${isOpen ? 'rotate-90' : ''}`}>›</span>
+                </button>
+                {isOpen && (
+                  <div className="mb-2 space-y-0.5">
+                    {group.items.map((item) => (
+                      <NavLink
+                        key={item.to}
+                        to={item.to}
+                        end={item.to === '/'}
+                        className={({ isActive }) =>
+                          `block rounded px-3 py-1.5 text-sm ${
+                            isActive
+                              ? 'border-l-2 border-teal bg-white/10 text-white'
+                              : 'text-white/70 hover:bg-white/10'
+                          }`
+                        }
+                      >
+                        {item.label}
+                      </NavLink>
+                    ))}
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            )
+          })}
         </nav>
       </aside>
       <div className="flex flex-1 flex-col">
