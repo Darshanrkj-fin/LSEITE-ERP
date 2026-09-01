@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { useAuth } from '../context/AuthContext'
+import { ImportStatementSection } from '../components/bankTransactions/ImportStatementSection'
 
 const emptyTxn = { transaction_date: '', amount: '', description: '' }
 
@@ -103,6 +104,8 @@ export function BankTransactions() {
       </p>
 
       {error && <p className="mb-4 text-sm text-clay">{error}</p>}
+
+      {canEdit && <ImportStatementSection companyId={profile.company_id} existingTxns={txns} onImported={load} />}
 
       <table className="mb-6 w-full text-sm">
         <thead>

@@ -464,7 +464,38 @@ feature-gap review.
   browser session. Full cleanup after each pass — throwaway users deleted, temp scripts and
   screenshots removed, `playwright` uninstalled again.
 
-Only the items below remain after Phase 24, and only if the business's shape changes.
+### Phase 25 — Bank Statement PDF Import ✅ (added outside the original phase plan, at user request)
+- Not part of the original 24-phase plan — flagged as out-of-plan when requested, then built with
+  explicit approval, per this file's own "stay on the roadmap" rule.
+- `src/lib/bankStatementParser.js` parses IDFC FIRST Bank statement PDFs entirely client-side via
+  `pdfjs-dist` (new dependency, approved before installing) — the statement file itself is never
+  uploaded anywhere. `getTextContent()` returns unordered text items by (x, y) position, not reading
+  order, and this particular bank's PDF layout turned out to have two non-obvious quirks discovered
+  by direct coordinate inspection: the "Particulars" column text is vertically *centered* on its row
+  rather than top-aligned (so some description lines sit above the date line's own y), and long
+  particulars blocks can continue onto the next page before that page's first dated row appears,
+  requiring an explicit carry-over rule distinguished from a row's own above-center content via a
+  self-calibrating gap-size heuristic (not a hardcoded pixel threshold).
+- Every parsed row is checked against the statement's own running balance column (previous balance ±
+  amount = stated balance) and flagged if it doesn't reconcile — a format-specific correctness signal
+  independent of the layout-parsing logic itself.
+- `src/components/bankTransactions/ImportStatementSection.jsx`, wired into `BankTransactions.jsx`
+  (admin/accountant only): upload → editable preview table (flagged rows and likely duplicates
+  highlighted, pre-unchecked) → explicit "Import N Selected" → normal `bank_transactions` insert.
+  Nothing is ever auto-imported; every row goes through the same RLS-scoped insert path as typing a
+  transaction in by hand.
+- Verified against a real 58-page, 743-transaction statement: 742 of 743 rows parsed with zero
+  issues, and the parsed amounts independently reconcile exactly against the statement's own printed
+  Total Debit/Total Credit and Closing Balance. **Known limitation**: on the one unusually long (8+
+  line) particulars block in the test statement, sandwiched between short rows, a couple of words at
+  the very edge of the description landed on the wrong row — the date/amount/balance for that row
+  were still correct (confirmed by the same reconciliation check). Since this only affects free-text
+  description completeness (not any financial figure) and every row is reviewed/editable before
+  import, this was accepted as a known edge case rather than a blocker.
+- Only supports this one bank's layout for now — a different bank's statement format would need its
+  own parser (the header-detection and coordinate logic here is specific to IDFC FIRST's PDF layout).
+
+Only the items below remain after Phase 25, and only if the business's shape changes.
 
 ### Later (not in current scope)
 - Multi-branch UI: branch switcher and consolidated multi-branch reports. Phase 20 makes the

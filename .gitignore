@@ -19,3 +19,8 @@ Thumbs.db
 # Logs
 npm-debug.log*
 *.log
+
+# Real bank/financial statements dropped into the project root for testing
+# the PDF import feature — never commit real personal financial data.
+*statement*.pdf
+/*.pdf
