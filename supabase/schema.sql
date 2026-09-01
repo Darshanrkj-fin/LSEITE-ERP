@@ -106,13 +106,14 @@ create table public.chart_of_accounts (
       'input_cgst', 'input_sgst', 'input_igst',
       'deductions_payable',
       'raw_material_inventory', 'finished_goods_inventory',
-      'cost_of_goods_sold', 'rnd_expense'
+      'cost_of_goods_sold', 'rnd_expense',
+      'customer_advances'
     )
   ),
   constraint coa_system_role_type_consistency check (
     system_role is null
     or (system_role in ('accounts_receivable', 'input_cgst', 'input_sgst', 'input_igst', 'raw_material_inventory', 'finished_goods_inventory') and type = 'asset')
-    or (system_role in ('accounts_payable', 'output_cgst', 'output_sgst', 'output_igst', 'deductions_payable') and type = 'liability')
+    or (system_role in ('accounts_payable', 'output_cgst', 'output_sgst', 'output_igst', 'deductions_payable', 'customer_advances') and type = 'liability')
     or (system_role in ('cost_of_goods_sold', 'rnd_expense') and type = 'expense')
   ),
   created_at timestamptz not null default now()
@@ -346,7 +347,8 @@ begin
     (p_company_id, 'Raw Material Inventory', 'asset', 'raw_material_inventory'),
     (p_company_id, 'Finished Goods Inventory', 'asset', 'finished_goods_inventory'),
     (p_company_id, 'Cost of Goods Sold', 'expense', 'cost_of_goods_sold'),
-    (p_company_id, 'R&D Expense', 'expense', 'rnd_expense')
+    (p_company_id, 'R&D Expense', 'expense', 'rnd_expense'),
+    (p_company_id, 'Customer Advances', 'liability', 'customer_advances')
   on conflict (company_id, system_role) where system_role is not null do nothing;
 end;
 $$;
@@ -1583,6 +1585,10 @@ create index payments_invoice_idx on public.payments (invoice_id);
 -- drop invoices with zero payments since a left-joined NULL never equals
 -- 'posted'). `security_invoker = true` — see item_current_stock above for
 -- why this is required, not optional, on every view here.
+-- Redefined again in the Phase 23 section below (after customer_advances
+-- exists) to also fold in applied advances — kept as the original
+-- payments-only definition here since customer_advances can't exist yet
+-- this early in a fresh top-to-bottom deploy.
 create view public.invoice_payment_status
 with (security_invoker = true) as
 select
@@ -3099,3 +3105,270 @@ grant execute on function public.convert_quote_to_invoice(uuid, uuid) to authent
 alter table public.parties add column phone text;
 alter table public.parties add column billing_address text;
 alter table public.parties add column shipping_address text;
+
+-- ============================================================
+-- Phase 23: Advance/Deposit Payments (optional, per custom order)
+-- An advance is a LIABILITY (goods or a refund owed) until applied to a
+-- real invoice — it must never post straight to Accounts Receivable.
+-- 14th system account added here: 'customer_advances' (liability) — see
+-- the chart_of_accounts check constraints and seed_system_accounts()
+-- above, both already updated to include it.
+-- Known gap, out of scope for this phase: bank_transactions.
+-- matched_payment_id only references payments(id), so an advance's own
+-- bank inflow can't be matched through the existing Reconciliation screen
+-- — widening that FK to be polymorphic would be a bigger structural
+-- change than "optional, per custom order" calls for.
+-- ============================================================
+
+-- Backfill: give any company that existed before this migration its
+-- customer_advances account too. Safe to run more than once.
+do $$
+declare
+  c record;
+begin
+  for c in select id from public.companies loop
+    perform public.seed_system_accounts(c.id);
+  end loop;
+end;
+$$;
+
+create table public.customer_advances (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  custom_order_id uuid not null references public.custom_orders (id),
+  party_id uuid not null references public.parties (id),
+  amount numeric(14, 2) not null check (amount > 0),
+  bank_account_id uuid not null references public.chart_of_accounts (id),
+  advance_date date not null,
+  status text not null default 'unapplied' check (status in ('unapplied', 'applied', 'refunded')),
+  applied_invoice_id uuid references public.invoices (id),
+  entry_group_id uuid not null,
+  created_at timestamptz not null default now()
+);
+
+alter table public.customer_advances enable row level security;
+
+create policy customer_advances_select on public.customer_advances
+  for select using (company_id = public.current_user_company_id());
+
+create function public.post_customer_advance(
+  p_custom_order_id uuid,
+  p_party_id uuid,
+  p_amount numeric,
+  p_bank_account_id uuid,
+  p_advance_date date
+)
+returns public.customer_advances
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_order_party_id uuid;
+  v_advances_account_id uuid;
+  v_entry_group uuid := gen_random_uuid();
+  v_advance public.customer_advances;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to record advances.';
+  end if;
+
+  if p_amount <= 0 then
+    raise exception 'Advance amount must be greater than zero.';
+  end if;
+
+  select party_id into v_order_party_id
+    from public.custom_orders where id = p_custom_order_id and company_id = v_company_id;
+  if v_order_party_id is null then
+    raise exception 'Custom order not found in your company.';
+  end if;
+  if v_order_party_id <> p_party_id then
+    raise exception 'Party does not match this custom order''s own customer.';
+  end if;
+
+  if not exists (
+    select 1 from public.parties where id = p_party_id and company_id = v_company_id and type = 'customer'
+  ) then
+    raise exception 'Party not found, not in your company, or not a customer.';
+  end if;
+
+  if not exists (
+    select 1 from public.chart_of_accounts
+    where id = p_bank_account_id and company_id = v_company_id and type = 'asset'
+  ) then
+    raise exception 'Bank/cash account not found, not in your company, or not an asset account.';
+  end if;
+
+  select id into v_advances_account_id from public.chart_of_accounts
+    where company_id = v_company_id and system_role = 'customer_advances';
+  if v_advances_account_id is null then
+    raise exception 'Missing system ledger account(s) for this company.';
+  end if;
+
+  insert into public.customer_advances (
+    company_id, custom_order_id, party_id, amount, bank_account_id, advance_date, entry_group_id
+  ) values (
+    v_company_id, p_custom_order_id, p_party_id, p_amount, p_bank_account_id, p_advance_date, v_entry_group
+  ) returning * into v_advance;
+
+  insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+    values (v_company_id, v_entry_group, p_advance_date, p_bank_account_id, p_amount, 0, 'customer_advance', v_advance.id);
+  insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+    values (v_company_id, v_entry_group, p_advance_date, v_advances_account_id, 0, p_amount, 'customer_advance', v_advance.id);
+
+  return v_advance;
+end;
+$$;
+
+grant execute on function public.post_customer_advance(uuid, uuid, numeric, uuid, date) to authenticated;
+
+-- Applies the FULL advance amount to one invoice in a single shot — matches
+-- the schema's one-shot applied_invoice_id FK, not a partial-tracking
+-- ledger. Guards against over-applying beyond what the invoice actually
+-- still owes, same discipline as post_payment()'s own balance check.
+create function public.apply_advance_to_invoice(p_advance_id uuid, p_invoice_id uuid)
+returns public.customer_advances
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_advance public.customer_advances;
+  v_invoice public.invoices;
+  v_ar_account_id uuid;
+  v_advances_account_id uuid;
+  v_already_covered numeric(14, 2);
+  v_entry_group uuid := gen_random_uuid();
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to apply advances.';
+  end if;
+
+  select * into v_advance from public.customer_advances where id = p_advance_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Advance not found in your company.';
+  end if;
+  if v_advance.status <> 'unapplied' then
+    raise exception 'This advance is % and cannot be applied.', v_advance.status;
+  end if;
+
+  select * into v_invoice from public.invoices where id = p_invoice_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Invoice not found in your company.';
+  end if;
+  if v_invoice.type <> 'sales' or v_invoice.status <> 'posted' then
+    raise exception 'Can only apply an advance to a posted sales invoice.';
+  end if;
+  if v_invoice.party_id <> v_advance.party_id then
+    raise exception 'This advance belongs to a different customer than the invoice.';
+  end if;
+
+  select coalesce(sum(p.amount), 0) + coalesce((
+    select sum(amount) from public.customer_advances
+    where applied_invoice_id = p_invoice_id and status = 'applied'
+  ), 0) into v_already_covered
+  from public.payments p where p.invoice_id = p_invoice_id and p.status = 'posted';
+
+  if v_already_covered + v_advance.amount > v_invoice.grand_total then
+    raise exception 'Applying % would exceed the invoice balance (already covered %, invoice total %).',
+      v_advance.amount, v_already_covered, v_invoice.grand_total;
+  end if;
+
+  select id into v_ar_account_id from public.chart_of_accounts
+    where company_id = v_company_id and system_role = 'accounts_receivable';
+  select id into v_advances_account_id from public.chart_of_accounts
+    where company_id = v_company_id and system_role = 'customer_advances';
+  if v_ar_account_id is null or v_advances_account_id is null then
+    raise exception 'Missing system ledger account(s) for this company.';
+  end if;
+
+  insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+    values (v_company_id, v_entry_group, current_date, v_advances_account_id, v_advance.amount, 0, 'customer_advance_applied', v_advance.id);
+  insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+    values (v_company_id, v_entry_group, current_date, v_ar_account_id, 0, v_advance.amount, 'customer_advance_applied', v_advance.id);
+
+  update public.customer_advances
+    set status = 'applied', applied_invoice_id = p_invoice_id
+    where id = p_advance_id
+    returning * into v_advance;
+
+  return v_advance;
+end;
+$$;
+
+grant execute on function public.apply_advance_to_invoice(uuid, uuid) to authenticated;
+
+-- Reverses the ORIGINAL post_customer_advance() posting exactly (never
+-- edits it) — only allowed while still unapplied, for a custom order that
+-- falls through after a deposit was taken.
+create function public.refund_customer_advance(p_advance_id uuid)
+returns public.customer_advances
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_advance public.customer_advances;
+  v_advances_account_id uuid;
+  v_entry_group uuid := gen_random_uuid();
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to refund advances.';
+  end if;
+
+  select * into v_advance from public.customer_advances where id = p_advance_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Advance not found in your company.';
+  end if;
+  if v_advance.status <> 'unapplied' then
+    raise exception 'This advance is % and cannot be refunded directly.', v_advance.status;
+  end if;
+
+  select id into v_advances_account_id from public.chart_of_accounts
+    where company_id = v_company_id and system_role = 'customer_advances';
+  if v_advances_account_id is null then
+    raise exception 'Missing system ledger account(s) for this company.';
+  end if;
+
+  insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+    values (v_company_id, v_entry_group, current_date, v_advances_account_id, v_advance.amount, 0, 'customer_advance_refund', v_advance.id);
+  insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+    values (v_company_id, v_entry_group, current_date, v_advance.bank_account_id, 0, v_advance.amount, 'customer_advance_refund', v_advance.id);
+
+  update public.customer_advances set status = 'refunded' where id = p_advance_id returning * into v_advance;
+
+  return v_advance;
+end;
+$$;
+
+grant execute on function public.refund_customer_advance(uuid) to authenticated;
+
+-- Redefines invoice_payment_status (originally created earlier in this
+-- file, payments-only) to also fold in applied customer_advances — see
+-- the comment on the original definition above for why.
+create or replace view public.invoice_payment_status
+with (security_invoker = true) as
+select
+  i.id as invoice_id,
+  i.company_id,
+  i.type,
+  i.invoice_number,
+  i.grand_total,
+  coalesce(sum(p.amount), 0) + coalesce(adv.applied_amount, 0) as amount_paid,
+  i.grand_total - coalesce(sum(p.amount), 0) - coalesce(adv.applied_amount, 0) as balance_due
+from public.invoices i
+left join public.payments p on p.invoice_id = i.id and p.status = 'posted'
+left join (
+  select applied_invoice_id, sum(amount) as applied_amount
+  from public.customer_advances
+  where status = 'applied'
+  group by applied_invoice_id
+) adv on adv.applied_invoice_id = i.id
+where i.status = 'posted'
+group by i.id, adv.applied_amount;

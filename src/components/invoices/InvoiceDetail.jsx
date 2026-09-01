@@ -18,6 +18,8 @@ export function InvoiceDetail({ type, basePath }) {
   const [invoice, setInvoice] = useState(null)
   const [lineItems, setLineItems] = useState([])
   const [creditNote, setCreditNote] = useState(null)
+  const [applicableAdvance, setApplicableAdvance] = useState(null)
+  const [applyingAdvance, setApplyingAdvance] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [downloading, setDownloading] = useState(false)
@@ -46,7 +48,42 @@ export function InvoiceDetail({ type, basePath }) {
     if (lineError) setError(lineError.message)
     else setLineItems(lines ?? [])
     setCreditNote(note ?? null)
+
+    // An unapplied advance on this invoice's custom order, if any — the
+    // "selectable credit when raising the final invoice" from ROADMAP.md's
+    // Phase 23. Only meaningful for a posted sales invoice tied to a
+    // custom order; apply_advance_to_invoice() re-validates everything
+    // server-side regardless.
+    if (inv && !invError && type === 'sales' && inv.custom_order_id) {
+      const { data: advance } = await supabase
+        .from('customer_advances')
+        .select('id, amount, advance_date')
+        .eq('custom_order_id', inv.custom_order_id)
+        .eq('party_id', inv.party_id)
+        .eq('status', 'unapplied')
+        .maybeSingle()
+      setApplicableAdvance(advance ?? null)
+    } else {
+      setApplicableAdvance(null)
+    }
+
     setLoading(false)
+  }
+
+  const handleApplyAdvance = async () => {
+    if (!window.confirm(`Apply advance of ${applicableAdvance.amount} to this invoice?`)) return
+    setError(null)
+    setApplyingAdvance(true)
+    const { error: applyError } = await supabase.rpc('apply_advance_to_invoice', {
+      p_advance_id: applicableAdvance.id,
+      p_invoice_id: id,
+    })
+    setApplyingAdvance(false)
+    if (applyError) {
+      setError(applyError.message)
+      return
+    }
+    load()
   }
 
   useEffect(() => {
@@ -254,6 +291,22 @@ export function InvoiceDetail({ type, basePath }) {
           </tbody>
         </table>
       </div>
+
+      {canEdit && applicableAdvance && (
+        <div className="mb-4 flex items-center justify-between rounded border border-slate-200 p-3">
+          <p className="text-sm text-slate-600">
+            An unapplied advance of {applicableAdvance.amount} from {applicableAdvance.advance_date} is available for
+            this custom order.
+          </p>
+          <button
+            onClick={handleApplyAdvance}
+            disabled={applyingAdvance}
+            className="rounded bg-slate-800 px-3 py-1 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+          >
+            {applyingAdvance ? 'Applying…' : 'Apply Advance'}
+          </button>
+        </div>
+      )}
 
       <PaymentsSection invoice={invoice} />
     </div>

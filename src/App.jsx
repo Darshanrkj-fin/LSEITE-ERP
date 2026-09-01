@@ -74,7 +74,7 @@ function App() {
         <Route path="/gst-alerts" element={<GstAlerts />} />
         <Route path="/production-entry" element={<ProductionEntry />} />
         <Route path="/rnd-trial" element={<RndTrial />} />
-        <Route path="/custom-orders" element={<CustomOrders />} />
+        <Route path="/custom-orders/*" element={<CustomOrders />} />
         <Route path="/subscriptions" element={<Subscriptions />} />
         <Route path="/subscription-cycles/*" element={<SubscriptionCycles />} />
         <Route path="/item-profitability" element={<ItemProfitability />} />

@@ -195,6 +195,19 @@ used depending on what was being verified:
   filters, and because `audit_log.changed_by_user` has no `ON DELETE CASCADE`, they silently block
   `auth.admin.deleteUser()`. Fix: explicitly find and delete `audit_log` rows by
   `table_name = 'tax_rates'` before retrying user deletion, and always delete `audit_log` last.
+- **A destructive mistake made twice (Phase 21, then again in Phase 23) — read this before writing
+  any test cleanup that touches `audit_log` for `chart_of_accounts`.** The real 13 (now 14) system
+  accounts are seeded via the service-role-run SQL Editor, so their legitimate `insert`-action audit
+  rows also have `changed_by_user = null` — identical to what a test's own `chart_of_accounts` rows
+  get when created/deleted via a service-role client. A cleanup filter of
+  `table_name = 'chart_of_accounts' AND changed_by_user IS NULL` **cannot tell these apart** and
+  will delete the real seed history along with the test rows, every time, silently. Both times this
+  was caught in the post-cleanup residue check and restored from record (once from this
+  conversation's own earlier printed data, once reconstructed from the live row itself when no
+  prior record existed — the second time was luck, not a fix). **Never filter `chart_of_accounts`
+  audit cleanup by `table_name` + `changed_by_user IS NULL` alone.** Always scope to the specific
+  test row's own `record_id` (or `record_id IN (...)` for a known small set) instead — that's the
+  one thing a test row and a real seed row never share.
 
 ## 12. Security posture
 

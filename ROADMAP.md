@@ -369,23 +369,60 @@ feature-gap review.
   all three fields left blank and confirmed they store as `null` (not empty strings). Self-check
   per CLAUDE.md §7: `trial_balance()` still balances after cleanup (0 = 0).
 
-### Phase 23 — Advance/Deposit Payments (optional, per custom order)
+### Phase 23 — Advance/Deposit Payments ✅ (optional, per custom order)
 - Not every custom order needs this — modeled as something staff can optionally attach, not a
   mandatory step. An advance is a **liability** (the company owes goods or a refund) until the
   final invoice is raised — it must never post straight to Accounts Receivable.
-- New system account role `customer_advances` (liability), seeded alongside the existing 13 system
-  accounts. New `customer_advances` table (company_id, custom_order_id, party_id, amount,
+- New system account role `customer_advances` (liability) — 14th system account, seeded alongside
+  the original 13 via `seed_system_accounts()` (updated) plus a one-time backfill for existing
+  companies. New `customer_advances` table (company_id, custom_order_id, party_id, amount,
   bank_account_id, advance_date, status: unapplied/applied/refunded, applied_invoice_id,
   entry_group_id).
-- `post_customer_advance()` debits the chosen bank/cash account and credits `customer_advances` —
-  balances independently of any invoice.
-- `apply_advance_to_invoice(p_advance_id, p_invoice_id)` debits `customer_advances` and credits
-  Accounts Receivable for that invoice — kept as its own function rather than overloading
-  `post_payment()`'s meaning, since no new cash actually moves at apply-time.
-- `refund_customer_advance()` reverses the original posting (never edits it), for a custom order
-  that falls through after a deposit was taken.
-- UI: an optional "Advance Payment" action on `CustomOrders.jsx`'s detail view; any unapplied
-  advance shows as a selectable credit when raising the final invoice for that custom order.
+- **Gap filled beyond the original spec**: `invoice_payment_status` (the view `PaymentsSection.jsx`
+  reads for "balance due") only summed the `payments` table — since `apply_advance_to_invoice()`
+  credits Accounts Receivable directly rather than inserting a `payments` row (a `payments` row is
+  expected to correspond to a real bank movement, which an advance-application isn't — the cash
+  already moved when the advance itself was taken), the view was redefined to also fold in applied
+  advances, so "what's still owed" stays accurate everywhere it's read.
+- `post_customer_advance()` validates the party matches the custom order's own customer (a real
+  safeguard, not just a form default), debits the chosen bank/cash account, and credits
+  `customer_advances` — balances independently of any invoice.
+- `apply_advance_to_invoice(p_advance_id, p_invoice_id)` validates the advance's party matches the
+  invoice's party, and guards against over-applying beyond what the invoice actually still owes
+  (same discipline as `post_payment()`'s own balance check) — debits `customer_advances` and
+  credits Accounts Receivable, dated today. Applies the full advance amount in one shot (matches
+  the schema's single `applied_invoice_id` FK, not a partial-tracking ledger). Kept as its own
+  function rather than overloading `post_payment()`'s meaning, since no new cash moves at apply-time.
+- `refund_customer_advance()` reverses the original posting exactly (never edits it) — only while
+  still `unapplied` — for a custom order that falls through after a deposit was taken.
+- **Known gap, deliberately out of scope**: `bank_transactions.matched_payment_id` only references
+  `payments(id)`, so an advance's own bank inflow can't be matched through the existing
+  Reconciliation screen. Widening that FK to be polymorphic would be a bigger structural change
+  than "optional, per custom order" calls for.
+- **UI gap filled**: `CustomOrders.jsx` had no detail view at all (unlike Sales Invoices/Quotes) —
+  became a router (`CustomOrderList.jsx` + `CustomOrderDetail.jsx`, matching the established
+  list→detail pattern) so the "Advance Payment" action has a real page to live on. An unapplied
+  advance surfaces as a selectable credit on the *invoice's* detail page once posted (applying
+  needs a real invoice id to exist first), not during the invoice-creation form itself.
+- Tested live end-to-end: posted an advance (confirmed zero relation to any invoice), rejected a
+  mismatched-party advance, posted a sales invoice for the same custom order, confirmed
+  `invoice_payment_status` showed the full balance before applying, applied the advance and
+  confirmed the view correctly dropped the balance by the advance amount, rejected re-applying an
+  already-applied advance and rejected an over-large advance, refunded a separate unapplied advance
+  and confirmed that journal balances too, and confirmed the invoice's own journal entries still
+  balance throughout. Self-check per CLAUDE.md §7: `trial_balance()` still balances after cleanup.
+- **The same audit_log cleanup mistake from Phase 21, made again**: this phase's own test cleanup
+  reused the identical overly-broad `audit_log` delete filter (`table_name = 'chart_of_accounts'
+  AND changed_by_user IS NULL`) and deleted all 14 legitimate seed rows (the original 13 plus the
+  new `customer_advances` one from this phase's own backfill) a second time. Caught in the residue
+  check, and restored — the original 13 from this session's earlier record, the 14th reconstructed
+  from the live `chart_of_accounts` row's own actual data since it had no prior record to restore
+  from. Verified back to 14 rows, all with `record_id`s matching real live accounts. This filter
+  pattern (`table_name = 'chart_of_accounts' AND changed_by_user IS NULL`) must never be used in
+  test cleanup again — it cannot distinguish real system-account seed rows from test rows, since
+  both are always inserted via the service-role client with no `auth.uid()`. Any future cleanup
+  touching `chart_of_accounts` audit rows must filter by `record_id` (the specific test account's
+  own id) instead, never by table+null-user alone.
 
 ### Phase 24 — Design System / UI Polish (do last — cosmetic, touches no business logic)
 - Grounded in the actual Lseite logo (navy → teal/sage gradient mandala, gold accent ring, serif
