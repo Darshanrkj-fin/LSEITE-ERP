@@ -480,18 +480,32 @@ feature-gap review.
   amount = stated balance) and flagged if it doesn't reconcile — a format-specific correctness signal
   independent of the layout-parsing logic itself.
 - `src/components/bankTransactions/ImportStatementSection.jsx`, wired into `BankTransactions.jsx`
-  (admin/accountant only): upload → editable preview table (flagged rows and likely duplicates
-  highlighted, pre-unchecked) → explicit "Import N Selected" → normal `bank_transactions` insert.
-  Nothing is ever auto-imported; every row goes through the same RLS-scoped insert path as typing a
-  transaction in by hand.
+  (admin/accountant only): upload → the parser's own flagged rows and any row matching an existing
+  transaction on date+amount are skipped automatically, everything else inserts into
+  `bank_transactions` immediately (no review step, no checkboxes, per explicit user request — the
+  monthly-import workflow shouldn't require re-checking dozens of rows by hand). A summary lists what
+  was imported and, separately, what was skipped and why, so skipped rows can be added by hand via the
+  existing manual-entry form below if they turn out to be needed. Every insert still goes through the
+  same RLS-scoped path as typing a transaction in manually.
+- **Real bug caught during testing**: `BankTransactions.jsx`'s post-import refresh originally reused
+  the same `load()` used everywhere else, which sets `loading=true` and made the whole page — including
+  `ImportStatementSection` — unmount and remount via the page's `if (loading) return <p>Loading…</p>`
+  guard, wiping the just-set import summary before it could render. Fixed with a `silent` refresh mode
+  used only after an import.
+- Duplicate detection is a match on date+amount against every transaction already in the company's
+  `bank_transactions`, not a database constraint — deliberately, since two genuinely separate
+  transactions can share a date and amount (e.g. two identical same-day UPI transfers), and a hard
+  uniqueness constraint would wrongly block a legitimate one.
 - Verified against a real 58-page, 743-transaction statement: 742 of 743 rows parsed with zero
   issues, and the parsed amounts independently reconcile exactly against the statement's own printed
-  Total Debit/Total Credit and Closing Balance. **Known limitation**: on the one unusually long (8+
-  line) particulars block in the test statement, sandwiched between short rows, a couple of words at
-  the very edge of the description landed on the wrong row — the date/amount/balance for that row
-  were still correct (confirmed by the same reconciliation check). Since this only affects free-text
-  description completeness (not any financial figure) and every row is reviewed/editable before
-  import, this was accepted as a known edge case rather than a blocker.
+  Total Debit/Total Credit and Closing Balance. Separately verified the automatic import/skip/summary
+  behavior end-to-end with a synthetic statement covering all three outcomes (clean row imported,
+  duplicate skipped, reconciliation-flagged row skipped). **Known limitation**: on the one unusually
+  long (8+ line) particulars block in the real test statement, sandwiched between short rows, a couple
+  of words at the very edge of the description landed on the wrong row — the date/amount/balance for
+  that row were still correct (confirmed by the same reconciliation check). Since this only affects
+  free-text description completeness, not any financial figure, this was accepted as a known edge
+  case rather than a blocker.
 - Only supports this one bank's layout for now — a different bank's statement format would need its
   own parser (the header-detection and coordinate logic here is specific to IDFC FIRST's PDF layout).
 
