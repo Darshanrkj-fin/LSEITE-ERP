@@ -232,28 +232,28 @@ export function ItemMaster() {
     }
   }
 
-  if (loading) return <p className="text-slate-500">Loading…</p>
+  if (loading) return <p className="text-muted">Loading…</p>
 
   return (
     <div className="max-w-3xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Item Master</h1>
-      <p className="mb-6 text-sm text-slate-500">Goods and services used on invoices.</p>
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Item Master</h1>
+      <p className="mb-6 text-sm text-muted">Goods and services used on invoices.</p>
 
       {canEdit && (
         <div className="mb-6 rounded border border-slate-200 p-4">
-          <p className="mb-2 text-sm font-medium text-slate-700">Bulk import from CSV</p>
-          <p className="mb-2 text-sm text-slate-500">
+          <p className="mb-2 text-sm font-medium text-ink">Bulk import from CSV</p>
+          <p className="mb-2 text-sm text-muted">
             Header row required: <code>{CSV_COLUMNS.join(', ')}</code>. Only <code>name</code>, <code>hsn_sac_code</code>,{' '}
             <code>unit</code>, and <code>type</code> ("good" or "service") are required — the rest are optional and
             only apply to goods.
           </p>
           <input type="file" accept=".csv,text/csv" onChange={handleImportFile} disabled={importing} className="text-sm" />
-          {importing && <p className="mt-2 text-sm text-slate-500">Importing…</p>}
+          {importing && <p className="mt-2 text-sm text-muted">Importing…</p>}
           {importResult && (
             <div className="mt-2 text-sm">
               <p className="text-green-700">Imported {importResult.imported} item(s).</p>
               {importResult.skipped.length > 0 && (
-                <ul className="mt-1 list-disc pl-5 text-amber-700">
+                <ul className="mt-1 list-disc pl-5 text-gold">
                   {importResult.skipped.map((s, i) => (
                     <li key={i}>{s}</li>
                   ))}
@@ -264,11 +264,11 @@ export function ItemMaster() {
         </div>
       )}
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       <table className="mb-6 w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-slate-500">
+          <tr className="border-b border-slate-200 text-left text-muted">
             <th className="py-2 pr-4">Name</th>
             <th className="py-2 pr-4">HSN/SAC</th>
             <th className="py-2 pr-4">Unit</th>
@@ -369,11 +369,11 @@ export function ItemMaster() {
                     <button
                       onClick={() => saveEdit(item.id)}
                       disabled={savingEdit}
-                      className="text-sm text-slate-800 hover:underline"
+                      className="text-sm text-ink hover:underline"
                     >
                       Save
                     </button>
-                    <button onClick={cancelEdit} className="text-sm text-slate-500 hover:underline">
+                    <button onClick={cancelEdit} className="text-sm text-muted hover:underline">
                       Cancel
                     </button>
                   </td>
@@ -390,10 +390,10 @@ export function ItemMaster() {
                   <td className="py-2 pr-4">{item.type === 'good' ? (item.low_stock_threshold ?? '—') : '—'}</td>
                   {canEdit && (
                     <td className="space-x-2 py-2 pr-4">
-                      <button onClick={() => startEdit(item)} className="text-sm text-slate-800 hover:underline">
+                      <button onClick={() => startEdit(item)} className="text-sm text-ink hover:underline">
                         Edit
                       </button>
-                      <button onClick={() => handleDelete(item)} className="text-sm text-red-600 hover:underline">
+                      <button onClick={() => handleDelete(item)} className="text-sm text-clay hover:underline">
                         Delete
                       </button>
                     </td>
@@ -404,7 +404,7 @@ export function ItemMaster() {
           ))}
           {items.length === 0 && (
             <tr>
-              <td colSpan={9} className="py-4 text-slate-400">
+              <td colSpan={9} className="py-4 text-muted">
                 No items yet.
               </td>
             </tr>
@@ -415,7 +415,7 @@ export function ItemMaster() {
       {canEdit && (
         <form onSubmit={handleAdd} className="flex flex-wrap items-end gap-3">
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Name</span>
+            <span className="mb-1 block text-muted">Name</span>
             <input
               required
               value={newItem.name}
@@ -424,7 +424,7 @@ export function ItemMaster() {
             />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">HSN/SAC code</span>
+            <span className="mb-1 block text-muted">HSN/SAC code</span>
             <input
               required
               value={newItem.hsn_sac_code}
@@ -433,7 +433,7 @@ export function ItemMaster() {
             />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Unit</span>
+            <span className="mb-1 block text-muted">Unit</span>
             <input
               required
               placeholder="e.g. Nos, Kg, Hrs"
@@ -443,7 +443,7 @@ export function ItemMaster() {
             />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Type</span>
+            <span className="mb-1 block text-muted">Type</span>
             <select
               value={newItem.type}
               onChange={(e) => setNewItem((f) => ({ ...f, type: e.target.value }))}
@@ -459,7 +459,7 @@ export function ItemMaster() {
           {newItem.type === 'good' && (
             <>
               <label className="text-sm">
-                <span className="mb-1 block text-slate-600">Manufacturing</span>
+                <span className="mb-1 block text-muted">Manufacturing</span>
                 <select
                   value={newItem.item_type}
                   onChange={(e) => setNewItem((f) => ({ ...f, item_type: e.target.value }))}
@@ -473,7 +473,7 @@ export function ItemMaster() {
                 </select>
               </label>
               <label className="text-sm">
-                <span className="mb-1 block text-slate-600">Category</span>
+                <span className="mb-1 block text-muted">Category</span>
                 <input
                   placeholder="e.g. Milk-based"
                   value={newItem.category}
@@ -482,7 +482,7 @@ export function ItemMaster() {
                 />
               </label>
               <label className="text-sm">
-                <span className="mb-1 block text-slate-600">Opening stock</span>
+                <span className="mb-1 block text-muted">Opening stock</span>
                 <input
                   type="number"
                   min="0"
@@ -493,7 +493,7 @@ export function ItemMaster() {
                 />
               </label>
               <label className="text-sm">
-                <span className="mb-1 block text-slate-600">Low-stock alert</span>
+                <span className="mb-1 block text-muted">Low-stock alert</span>
                 <input
                   type="number"
                   min="0"
@@ -509,7 +509,7 @@ export function ItemMaster() {
           <button
             type="submit"
             disabled={adding}
-            className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+            className="rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
             {adding ? 'Adding…' : 'Add item'}
           </button>

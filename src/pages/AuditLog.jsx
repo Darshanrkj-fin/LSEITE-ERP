@@ -31,12 +31,12 @@ export function AuditLog() {
     }
   }, [tableFilter])
 
-  if (loading) return <p className="text-slate-500">Loading…</p>
+  if (loading) return <p className="text-muted">Loading…</p>
 
   return (
     <div className="max-w-4xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Audit Log</h1>
-      <p className="mb-6 text-sm text-slate-500">
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Audit Log</h1>
+      <p className="mb-6 text-sm text-muted">
         Every insert, update, and delete on master data (items, parties, tax rates, chart of accounts) — most recent
         200 entries. Financial postings (invoices, payments, payroll) aren't here since they're never edited or
         deleted in the first place — they're always reversed with a new dated entry instead.
@@ -44,7 +44,7 @@ export function AuditLog() {
 
       <div className="mb-4">
         <label className="text-sm">
-          <span className="mb-1 block text-slate-600">Table</span>
+          <span className="mb-1 block text-muted">Table</span>
           <select
             value={tableFilter}
             onChange={(e) => setTableFilter(e.target.value)}
@@ -60,11 +60,11 @@ export function AuditLog() {
         </label>
       </div>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-slate-500">
+          <tr className="border-b border-slate-200 text-left text-muted">
             <th className="py-2 pr-4">Time</th>
             <th className="py-2 pr-4">Table</th>
             <th className="py-2 pr-4">Action</th>
@@ -80,17 +80,17 @@ export function AuditLog() {
               <td className="py-2 pr-4">{r.table_name}</td>
               <td className="py-2 pr-4 capitalize">{r.action}</td>
               <td className="py-2 pr-4">{r.users?.full_name ?? '—'}</td>
-              <td className="max-w-xs py-2 pr-4 font-mono text-xs break-all text-slate-500">
+              <td className="max-w-xs py-2 pr-4 font-mono text-xs break-all text-muted">
                 {r.old_values ? JSON.stringify(r.old_values) : '—'}
               </td>
-              <td className="max-w-xs py-2 pr-4 font-mono text-xs break-all text-slate-500">
+              <td className="max-w-xs py-2 pr-4 font-mono text-xs break-all text-muted">
                 {r.new_values ? JSON.stringify(r.new_values) : '—'}
               </td>
             </tr>
           ))}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={6} className="py-4 text-slate-400">
+              <td colSpan={6} className="py-4 text-muted">
                 No changes logged yet.
               </td>
             </tr>

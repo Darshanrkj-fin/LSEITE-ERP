@@ -92,18 +92,18 @@ export function EmployeeMaster() {
     load()
   }
 
-  if (loading) return <p className="text-slate-500">Loading…</p>
+  if (loading) return <p className="text-muted">Loading…</p>
 
   return (
     <div className="max-w-3xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Employee Master</h1>
-      <p className="mb-6 text-sm text-slate-500">Employees eligible for payroll runs.</p>
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Employee Master</h1>
+      <p className="mb-6 text-sm text-muted">Employees eligible for payroll runs.</p>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       <table className="mb-6 w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-slate-500">
+          <tr className="border-b border-slate-200 text-left text-muted">
             <th className="py-2 pr-4">Name</th>
             <th className="py-2 pr-4">Code</th>
             <th className="py-2 pr-4">Join date</th>
@@ -163,11 +163,11 @@ export function EmployeeMaster() {
                     <button
                       onClick={() => saveEdit(emp.id)}
                       disabled={savingEdit}
-                      className="text-sm text-slate-800 hover:underline"
+                      className="text-sm text-ink hover:underline"
                     >
                       Save
                     </button>
-                    <button onClick={cancelEdit} className="text-sm text-slate-500 hover:underline">
+                    <button onClick={cancelEdit} className="text-sm text-muted hover:underline">
                       Cancel
                     </button>
                   </td>
@@ -181,10 +181,10 @@ export function EmployeeMaster() {
                   <td className="py-2 pr-4 capitalize">{emp.status}</td>
                   {canEdit && (
                     <td className="space-x-2 py-2 pr-4">
-                      <button onClick={() => startEdit(emp)} className="text-sm text-slate-800 hover:underline">
+                      <button onClick={() => startEdit(emp)} className="text-sm text-ink hover:underline">
                         Edit
                       </button>
-                      <button onClick={() => handleDelete(emp)} className="text-sm text-red-600 hover:underline">
+                      <button onClick={() => handleDelete(emp)} className="text-sm text-clay hover:underline">
                         Delete
                       </button>
                     </td>
@@ -195,7 +195,7 @@ export function EmployeeMaster() {
           ))}
           {employees.length === 0 && (
             <tr>
-              <td colSpan={6} className="py-4 text-slate-400">
+              <td colSpan={6} className="py-4 text-muted">
                 No employees yet.
               </td>
             </tr>
@@ -206,7 +206,7 @@ export function EmployeeMaster() {
       {canEdit && (
         <form onSubmit={handleAdd} className="flex flex-wrap items-end gap-3">
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Name</span>
+            <span className="mb-1 block text-muted">Name</span>
             <input
               required
               value={newEmployee.name}
@@ -215,7 +215,7 @@ export function EmployeeMaster() {
             />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Code</span>
+            <span className="mb-1 block text-muted">Code</span>
             <input
               value={newEmployee.employee_code}
               onChange={(e) => setNewEmployee((f) => ({ ...f, employee_code: e.target.value }))}
@@ -223,7 +223,7 @@ export function EmployeeMaster() {
             />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Join date</span>
+            <span className="mb-1 block text-muted">Join date</span>
             <input
               type="date"
               required
@@ -233,7 +233,7 @@ export function EmployeeMaster() {
             />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Monthly gross</span>
+            <span className="mb-1 block text-muted">Monthly gross</span>
             <input
               type="number"
               required
@@ -247,7 +247,7 @@ export function EmployeeMaster() {
           <button
             type="submit"
             disabled={adding}
-            className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+            className="rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
             {adding ? 'Adding…' : 'Add employee'}
           </button>

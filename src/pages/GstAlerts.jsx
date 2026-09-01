@@ -45,23 +45,23 @@ export function GstAlerts() {
     load()
   }
 
-  if (loading) return <p className="text-slate-500">Loading…</p>
+  if (loading) return <p className="text-muted">Loading…</p>
 
   return (
     <div className="max-w-4xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">GST Rate Change Alerts</h1>
-      <p className="mb-6 text-sm text-slate-500">
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">GST Rate Change Alerts</h1>
+      <p className="mb-6 text-sm text-muted">
         A weekly job checks the CBIC GST notifications page and logs whether the page has changed
         since the last check. This can only tell you <em>that</em> something changed, not what — open
         the page yourself and update Tax Rates manually if a rate change applies. Nothing is ever
         applied automatically.
       </p>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-slate-500">
+          <tr className="border-b border-slate-200 text-left text-muted">
             <th className="py-2 pr-4">Checked at</th>
             <th className="py-2 pr-4">Change detected</th>
             <th className="py-2 pr-4">Reviewed</th>
@@ -74,9 +74,9 @@ export function GstAlerts() {
               <td className="py-2 pr-4">{new Date(row.checked_at).toLocaleString()}</td>
               <td className="py-2 pr-4">
                 {row.notification_found ? (
-                  <span className="font-medium text-amber-700">Yes — review needed</span>
+                  <span className="font-medium text-gold">Yes — review needed</span>
                 ) : (
-                  <span className="text-slate-400">No</span>
+                  <span className="text-muted">No</span>
                 )}
               </td>
               <td className="py-2 pr-4">
@@ -88,7 +88,7 @@ export function GstAlerts() {
                     <button
                       onClick={() => handleMarkReviewed(row)}
                       disabled={reviewingId === row.id}
-                      className="text-sm text-slate-800 hover:underline"
+                      className="text-sm text-ink hover:underline"
                     >
                       {reviewingId === row.id ? 'Saving…' : 'Mark reviewed'}
                     </button>
@@ -99,7 +99,7 @@ export function GstAlerts() {
           ))}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={4} className="py-4 text-slate-400">
+              <td colSpan={4} className="py-4 text-muted">
                 No checks logged yet.
               </td>
             </tr>

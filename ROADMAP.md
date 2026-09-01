@@ -15,11 +15,11 @@ A cloud-hosted accounting system for a single company (multi-branch ready) that 
   produced as finished goods)
 - Subscriptions: recurring customer plans with variable items per cycle (not a fixed box)
 
-Every phase through Phase 19 is **built and live-tested** — see section 5 for what each covers.
-Phases 20–24 (section 5b) are planned and under active construction: multi-branch schema
-readiness, quote management, expanded customer fields, advance/deposit payments, and a cohesive
-visual design system, drawn from a follow-up gap review. Only the "Later" items after section 5b
-remain out of scope beyond that, and only if the business's shape changes.
+Every phase through Phase 24 is **built and live-tested** — see section 5 for Phases 1–19 and
+section 5b for Phases 20–24 (multi-branch schema readiness, quote management, expanded customer
+fields, advance/deposit payments, and a cohesive visual design system, drawn from a follow-up gap
+review). Only the "Later" items after section 5b remain out of scope, and only if the business's
+shape changes.
 
 ## 1. Tech Stack (all free-tier)
 | Layer | Choice | Why |
@@ -424,17 +424,45 @@ feature-gap review.
   touching `chart_of_accounts` audit rows must filter by `record_id` (the specific test account's
   own id) instead, never by table+null-user alone.
 
-### Phase 24 — Design System / UI Polish (do last — cosmetic, touches no business logic)
-- Grounded in the actual Lseite logo (navy → teal/sage gradient mandala, gold accent ring, serif
-  "Lseite" wordmark) rather than default Tailwind gray — a global token fix, not a page-by-page
-  redesign or a framework swap.
-- New CSS custom properties for ink/teal/sage/gold/clay/paper/mist/line/muted colors and a
-  Fraunces (display) / Inter (sans) font pairing, applied via a global find/replace pass: page
-  `<h1>` titles get the display serif + ink color, secondary text goes muted, error text goes clay,
-  success/pending status badges get teal/gold tints, the sidebar goes ink with a teal left-border
-  on the active nav item.
-- Dense data tables are left structurally as-is — just the gray-scale tokens swap. No shadows on
-  every card, no ALL-CAPS stat labels, no decorative gradients spread across every table cell.
+### Phase 24 — Design System / UI Polish ✅ (cosmetic, touches no business logic)
+- Confirmed first: the project was already on Tailwind v4 with the exact CSS-first `@theme` setup
+  the plan needed (`@import "tailwindcss"` in `src/index.css`, no separate `tailwind.config.js`) —
+  the version-mismatch risk flagged when this phase was planned turned out to be a non-issue.
+- `src/index.css` gets the `@theme` block verbatim from the plan: ink/teal/sage/gold/clay/paper/
+  mist/line/muted color tokens, Fraunces (display) / Inter (sans) fonts, `body` on the paper
+  background.
+- **Real bug caught and fixed along the way**: the sidebar `<aside>` had no independent scroll
+  region (unlike `<main>`, which already had `overflow-auto`). The old light `bg-slate-50` sidebar
+  hid this completely; once it went dark (`bg-ink`), nav items past the fold rendered on the page's
+  light background instead of the sidebar. Fixed with `overflow-y-auto` on the `<aside>`, verified
+  by screenshotting the sidebar scrolled to the bottom.
+- Global sweep across all 43 files with an `<h1>` or one of the target color classes: page `<h1>`
+  titles get `font-display text-ink` (and *only* titles — verified afterward that no `<h2>`/`<h3>`
+  picked up the serif by mistake); every other `text-slate-800`/`text-slate-700` occurrence
+  (row-action links, stat values, section subheadings) got `text-ink` without the serif;
+  `text-slate-500`/`text-slate-400` and the 36 form-label spans (`text-slate-600` in the exact
+  `<span className="mb-1 block text-slate-600">` pattern only — link/button chrome using the same
+  slate-600 shade was deliberately left alone) all became `text-muted`; `text-red-600`/`text-red-700`
+  became `text-clay`; `text-amber-700` became `text-gold`; primary buttons (`bg-slate-800` /
+  `hover:bg-slate-700`) became `bg-ink` / `hover:opacity-90` — extended beyond the plan's literal
+  three rules for visual coherence (leaving buttons slate while the sidebar went a different dark
+  color would have read as two competing "blacks"). Executed via `sed` given the scale (43 files)
+  and the codebase's extreme structural consistency, not 300+ manual edits — verified after with
+  greps confirming zero stray old tokens remained and the `<h1>`-only scoping held exactly.
+- **Deliberately not done — flagging rather than skipping silently**: the plan's "status badge
+  (posted/paid → teal, pending/draft → gold)" rule assumes badges already exist as a UI pattern to
+  re-skin. This app has no pill/background badge treatment anywhere — every status is plain
+  capitalized text (`<td className="capitalize">{status}</td>`). Adding real colored-pill badges
+  across every list view (invoices, quotes, payments, custom orders, payroll runs) would be a new
+  UI pattern, not a token swap, and wasn't built here. Worth a follow-up if wanted.
+- Dense data tables left structurally as-is — just the gray-scale tokens swap. No shadows on every
+  card (dashboard stat tiles and the login card use `bg-mist` + `border-line` instead), no ALL-CAPS
+  stat labels, no decorative gradients spread across every table cell.
+- Verified visually, not just by compiling: screenshotted the login page, the dashboard (both
+  before and after the sidebar-scroll fix), and two data-heavy pages (Party Master's wide table +
+  form, Chart of Accounts' Edit/Delete row actions) via a throwaway user driven through a real
+  browser session. Full cleanup after each pass — throwaway users deleted, temp scripts and
+  screenshots removed, `playwright` uninstalled again.
 
 Only the items below remain after Phase 24, and only if the business's shape changes.
 

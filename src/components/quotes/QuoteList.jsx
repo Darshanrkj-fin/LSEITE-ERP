@@ -34,19 +34,19 @@ export function QuoteList() {
     }
   }, [statusFilter])
 
-  if (loading) return <p className="text-slate-500">Loading…</p>
+  if (loading) return <p className="text-muted">Loading…</p>
 
   return (
     <div className="max-w-3xl">
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-slate-800">Quotes</h1>
-          <p className="text-sm text-slate-500">A quote has no accounting impact until it's converted to an invoice.</p>
+          <h1 className="text-xl font-semibold font-display text-ink">Quotes</h1>
+          <p className="text-sm text-muted">A quote has no accounting impact until it's converted to an invoice.</p>
         </div>
         {canEdit && (
           <Link
             to="/quotes/new"
-            className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700"
+            className="rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90"
           >
             New Quote
           </Link>
@@ -54,7 +54,7 @@ export function QuoteList() {
       </div>
 
       <label className="mb-4 block text-sm">
-        <span className="mb-1 block text-slate-600">Status</span>
+        <span className="mb-1 block text-muted">Status</span>
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
@@ -70,11 +70,11 @@ export function QuoteList() {
         </select>
       </label>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-slate-500">
+          <tr className="border-b border-slate-200 text-left text-muted">
             <th className="py-2 pr-4">Quote #</th>
             <th className="py-2 pr-4">Date</th>
             <th className="py-2 pr-4">Customer</th>
@@ -86,7 +86,7 @@ export function QuoteList() {
           {quotes.map((q) => (
             <tr key={q.id} className="border-b border-slate-100">
               <td className="py-2 pr-4">
-                <Link to={`/quotes/${q.id}`} className="text-slate-800 hover:underline">
+                <Link to={`/quotes/${q.id}`} className="text-ink hover:underline">
                   {q.quote_number}
                 </Link>
               </td>
@@ -98,7 +98,7 @@ export function QuoteList() {
           ))}
           {quotes.length === 0 && (
             <tr>
-              <td colSpan={5} className="py-4 text-slate-400">
+              <td colSpan={5} className="py-4 text-muted">
                 No quotes yet.
               </td>
             </tr>

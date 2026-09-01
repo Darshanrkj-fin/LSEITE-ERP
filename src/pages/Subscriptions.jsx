@@ -99,21 +99,21 @@ export function Subscriptions() {
     load()
   }
 
-  if (loading) return <p className="text-slate-500">Loading…</p>
+  if (loading) return <p className="text-muted">Loading…</p>
 
   return (
     <div className="max-w-3xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Subscriptions</h1>
-      <p className="mb-6 text-sm text-slate-500">
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Subscriptions</h1>
+      <p className="mb-6 text-sm text-muted">
         Recurring customer plans. Each cycle's actual items are managed separately under Subscription Cycles — a
         subscription here is just who, how often, and whether it's currently active.
       </p>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       <table className="mb-6 w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-slate-500">
+          <tr className="border-b border-slate-200 text-left text-muted">
             <th className="py-2 pr-4">Customer</th>
             <th className="py-2 pr-4">Frequency</th>
             <th className="py-2 pr-4">Status</th>
@@ -177,11 +177,11 @@ export function Subscriptions() {
                     <button
                       onClick={() => saveEdit(sub.id)}
                       disabled={savingEdit}
-                      className="text-sm text-slate-800 hover:underline"
+                      className="text-sm text-ink hover:underline"
                     >
                       Save
                     </button>
-                    <button onClick={cancelEdit} className="text-sm text-slate-500 hover:underline">
+                    <button onClick={cancelEdit} className="text-sm text-muted hover:underline">
                       Cancel
                     </button>
                   </td>
@@ -194,10 +194,10 @@ export function Subscriptions() {
                   <td className="py-2 pr-4">{sub.start_date}</td>
                   {canEdit && (
                     <td className="space-x-2 py-2 pr-4">
-                      <button onClick={() => startEdit(sub)} className="text-sm text-slate-800 hover:underline">
+                      <button onClick={() => startEdit(sub)} className="text-sm text-ink hover:underline">
                         Edit
                       </button>
-                      <button onClick={() => handleDelete(sub)} className="text-sm text-red-600 hover:underline">
+                      <button onClick={() => handleDelete(sub)} className="text-sm text-clay hover:underline">
                         Delete
                       </button>
                     </td>
@@ -208,7 +208,7 @@ export function Subscriptions() {
           ))}
           {subscriptions.length === 0 && (
             <tr>
-              <td colSpan={5} className="py-4 text-slate-400">
+              <td colSpan={5} className="py-4 text-muted">
                 No subscriptions yet.
               </td>
             </tr>
@@ -219,7 +219,7 @@ export function Subscriptions() {
       {canEdit && (
         <form onSubmit={handleAdd} className="flex flex-wrap items-end gap-3">
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Customer</span>
+            <span className="mb-1 block text-muted">Customer</span>
             <select
               required
               value={newSub.party_id}
@@ -235,7 +235,7 @@ export function Subscriptions() {
             </select>
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Frequency</span>
+            <span className="mb-1 block text-muted">Frequency</span>
             <select
               value={newSub.frequency}
               onChange={(e) => setNewSub((f) => ({ ...f, frequency: e.target.value }))}
@@ -249,7 +249,7 @@ export function Subscriptions() {
             </select>
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Status</span>
+            <span className="mb-1 block text-muted">Status</span>
             <select
               value={newSub.status}
               onChange={(e) => setNewSub((f) => ({ ...f, status: e.target.value }))}
@@ -263,7 +263,7 @@ export function Subscriptions() {
             </select>
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Start date</span>
+            <span className="mb-1 block text-muted">Start date</span>
             <input
               type="date"
               required
@@ -275,7 +275,7 @@ export function Subscriptions() {
           <button
             type="submit"
             disabled={adding}
-            className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+            className="rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
             {adding ? 'Adding…' : 'Add subscription'}
           </button>

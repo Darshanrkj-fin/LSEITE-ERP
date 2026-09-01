@@ -110,32 +110,32 @@ export function SubscriptionCycleDetail({ basePath }) {
     load()
   }
 
-  if (loading) return <p className="text-slate-500">Loading…</p>
-  if (error && !cycle) return <p className="text-sm text-red-600">{error}</p>
+  if (loading) return <p className="text-muted">Loading…</p>
+  if (error && !cycle) return <p className="text-sm text-clay">{error}</p>
 
   return (
     <div className="max-w-2xl">
-      <Link to={basePath} className="mb-4 inline-block text-sm text-slate-500 hover:underline">
+      <Link to={basePath} className="mb-4 inline-block text-sm text-muted hover:underline">
         ← Back
       </Link>
 
       <div className="mb-6">
-        <h1 className="text-xl font-semibold text-slate-800">{cycle.subscriptions?.parties?.name}</h1>
-        <p className="text-sm text-slate-500">
+        <h1 className="text-xl font-semibold font-display text-ink">{cycle.subscriptions?.parties?.name}</h1>
+        <p className="text-sm text-muted">
           {cycle.cycle_date} · <span className="capitalize">{cycle.status}</span>
         </p>
         {cycle.status === 'finalized' && cycle.invoice_id && (
-          <Link to={`/sales-invoices/${cycle.invoice_id}`} className="text-sm text-slate-800 hover:underline">
+          <Link to={`/sales-invoices/${cycle.invoice_id}`} className="text-sm text-ink hover:underline">
             View invoice →
           </Link>
         )}
       </div>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       <table className="mb-4 w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-slate-500">
+          <tr className="border-b border-slate-200 text-left text-muted">
             <th className="py-2 pr-4">Item</th>
             <th className="py-2 pr-4">Quantity</th>
             <th className="py-2 pr-4">Rate</th>
@@ -150,7 +150,7 @@ export function SubscriptionCycleDetail({ basePath }) {
               <td className="py-2 pr-4">{li.rate}</td>
               {canEdit && isDraft && (
                 <td className="py-2 pr-4">
-                  <button onClick={() => handleRemoveLine(li.id)} className="text-sm text-red-600 hover:underline">
+                  <button onClick={() => handleRemoveLine(li.id)} className="text-sm text-clay hover:underline">
                     Remove
                   </button>
                 </td>
@@ -159,7 +159,7 @@ export function SubscriptionCycleDetail({ basePath }) {
           ))}
           {lineItems.length === 0 && (
             <tr>
-              <td colSpan={4} className="py-4 text-slate-400">
+              <td colSpan={4} className="py-4 text-muted">
                 No items yet.
               </td>
             </tr>
@@ -171,7 +171,7 @@ export function SubscriptionCycleDetail({ basePath }) {
         <>
           <form onSubmit={handleAddLine} className="mb-6 flex flex-wrap items-end gap-3">
             <label className="text-sm">
-              <span className="mb-1 block text-slate-600">Item</span>
+              <span className="mb-1 block text-muted">Item</span>
               <select
                 value={newLine.item_id}
                 onChange={(e) => setNewLine((f) => ({ ...f, item_id: e.target.value }))}
@@ -186,7 +186,7 @@ export function SubscriptionCycleDetail({ basePath }) {
               </select>
             </label>
             <label className="text-sm">
-              <span className="mb-1 block text-slate-600">Quantity</span>
+              <span className="mb-1 block text-muted">Quantity</span>
               <input
                 type="number"
                 min="0.01"
@@ -197,7 +197,7 @@ export function SubscriptionCycleDetail({ basePath }) {
               />
             </label>
             <label className="text-sm">
-              <span className="mb-1 block text-slate-600">Rate</span>
+              <span className="mb-1 block text-muted">Rate</span>
               <input
                 type="number"
                 min="0"
@@ -218,7 +218,7 @@ export function SubscriptionCycleDetail({ basePath }) {
 
           <div className="flex flex-wrap items-end gap-3">
             <label className="text-sm">
-              <span className="mb-1 block text-slate-600">Revenue account</span>
+              <span className="mb-1 block text-muted">Revenue account</span>
               <select
                 value={revenueAccountId}
                 onChange={(e) => setRevenueAccountId(e.target.value)}
@@ -235,7 +235,7 @@ export function SubscriptionCycleDetail({ basePath }) {
             <button
               onClick={handleFinalize}
               disabled={working}
-              className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+              className="rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
             >
               {working ? 'Working…' : 'Finalize into Invoice'}
             </button>

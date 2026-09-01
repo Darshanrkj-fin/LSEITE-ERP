@@ -29,18 +29,18 @@ export function BatchExpiryReport() {
   const categories = [...new Set(rows.map((r) => r.category).filter(Boolean))].sort()
   const visibleRows = categoryFilter ? rows.filter((r) => r.category === categoryFilter) : rows
 
-  if (loading) return <p className="text-slate-500">Loading…</p>
+  if (loading) return <p className="text-muted">Loading…</p>
 
   return (
     <div className="max-w-3xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Batch / Expiry Report</h1>
-      <p className="mb-6 text-sm text-slate-500">
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Batch / Expiry Report</h1>
+      <p className="mb-6 text-sm text-muted">
         Every batch with stock remaining, soonest expiry first — raw materials and finished goods alike.
       </p>
 
       <div className="mb-4">
         <label className="text-sm">
-          <span className="mb-1 block text-slate-600">Category</span>
+          <span className="mb-1 block text-muted">Category</span>
           <select
             value={categoryFilter}
             onChange={(e) => setCategoryFilter(e.target.value)}
@@ -56,11 +56,11 @@ export function BatchExpiryReport() {
         </label>
       </div>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-slate-500">
+          <tr className="border-b border-slate-200 text-left text-muted">
             <th className="py-2 pr-4">Item</th>
             <th className="py-2 pr-4">Type</th>
             <th className="py-2 pr-4">Category</th>
@@ -80,7 +80,7 @@ export function BatchExpiryReport() {
           ))}
           {visibleRows.length === 0 && (
             <tr>
-              <td colSpan={5} className="py-4 text-slate-400">
+              <td colSpan={5} className="py-4 text-muted">
                 No batches with remaining stock.
               </td>
             </tr>

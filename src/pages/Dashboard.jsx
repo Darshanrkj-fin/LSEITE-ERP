@@ -51,28 +51,28 @@ export function Dashboard() {
     }
   }, [])
 
-  if (loading) return <p className="text-slate-500">Loading…</p>
+  if (loading) return <p className="text-muted">Loading…</p>
 
   return (
     <div className="max-w-4xl">
-      <h1 className="mb-6 text-xl font-semibold text-slate-800">Dashboard</h1>
+      <h1 className="font-display mb-6 text-xl font-semibold text-ink">Dashboard</h1>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <div className="rounded border border-slate-200 p-4">
-          <p className="text-sm text-slate-500">Sales this month</p>
-          <p className="text-2xl font-semibold text-slate-800">{salesThisMonth.toFixed(2)}</p>
+        <div className="rounded border border-line bg-mist p-4">
+          <p className="text-sm text-muted">Sales this month</p>
+          <p className="text-2xl font-semibold text-ink">{salesThisMonth.toFixed(2)}</p>
         </div>
-        <div className="rounded border border-slate-200 p-4">
-          <p className="text-sm text-slate-500">Low-stock items</p>
-          <p className={`text-2xl font-semibold ${lowStockItems.length > 0 ? 'text-red-700' : 'text-slate-800'}`}>
+        <div className="rounded border border-line bg-mist p-4">
+          <p className="text-sm text-muted">Low-stock items</p>
+          <p className={`text-2xl font-semibold ${lowStockItems.length > 0 ? 'text-clay' : 'text-ink'}`}>
             {lowStockItems.length}
           </p>
         </div>
-        <div className="rounded border border-slate-200 p-4">
-          <p className="text-sm text-slate-500">Subscription cycles awaiting review</p>
-          <p className={`text-2xl font-semibold ${cyclesAwaitingReview.length > 0 ? 'text-amber-700' : 'text-slate-800'}`}>
+        <div className="rounded border border-line bg-mist p-4">
+          <p className="text-sm text-muted">Subscription cycles awaiting review</p>
+          <p className={`text-2xl font-semibold ${cyclesAwaitingReview.length > 0 ? 'text-gold' : 'text-ink'}`}>
             {cyclesAwaitingReview.length}
           </p>
         </div>
@@ -80,15 +80,15 @@ export function Dashboard() {
 
       <div className="grid grid-cols-1 gap-8 sm:grid-cols-2">
         <div>
-          <h2 className="mb-2 text-sm font-semibold text-slate-700">Low-stock items</h2>
+          <h2 className="mb-2 text-sm font-semibold text-ink">Low-stock items</h2>
           {lowStockItems.length === 0 ? (
-            <p className="text-sm text-slate-400">Nothing below threshold.</p>
+            <p className="text-sm text-muted">Nothing below threshold.</p>
           ) : (
             <ul className="space-y-1 text-sm">
               {lowStockItems.map((r) => (
-                <li key={r.item_id} className="flex justify-between border-b border-slate-100 py-1">
+                <li key={r.item_id} className="flex justify-between border-b border-line py-1">
                   <span>{r.name}</span>
-                  <span className="text-red-700">
+                  <span className="text-clay">
                     {r.current_stock} / {r.low_stock_threshold}
                   </span>
                 </li>
@@ -101,15 +101,15 @@ export function Dashboard() {
         </div>
 
         <div>
-          <h2 className="mb-2 text-sm font-semibold text-slate-700">Subscription cycles awaiting review</h2>
+          <h2 className="mb-2 text-sm font-semibold text-ink">Subscription cycles awaiting review</h2>
           {cyclesAwaitingReview.length === 0 ? (
-            <p className="text-sm text-slate-400">Nothing waiting.</p>
+            <p className="text-sm text-muted">Nothing waiting.</p>
           ) : (
             <ul className="space-y-1 text-sm">
               {cyclesAwaitingReview.map((c) => (
-                <li key={c.id} className="flex justify-between border-b border-slate-100 py-1">
+                <li key={c.id} className="flex justify-between border-b border-line py-1">
                   <span>{c.subscriptions?.parties?.name}</span>
-                  <span className="text-slate-500">{c.cycle_date}</span>
+                  <span className="text-muted">{c.cycle_date}</span>
                 </li>
               ))}
             </ul>
@@ -120,15 +120,15 @@ export function Dashboard() {
         </div>
 
         <div>
-          <h2 className="mb-2 text-sm font-semibold text-slate-700">Batches nearest expiry</h2>
+          <h2 className="mb-2 text-sm font-semibold text-ink">Batches nearest expiry</h2>
           {expiringBatches.length === 0 ? (
-            <p className="text-sm text-slate-400">No batches tracked yet.</p>
+            <p className="text-sm text-muted">No batches tracked yet.</p>
           ) : (
             <ul className="space-y-1 text-sm">
               {expiringBatches.map((b) => (
-                <li key={b.batch_id} className="flex justify-between border-b border-slate-100 py-1">
+                <li key={b.batch_id} className="flex justify-between border-b border-line py-1">
                   <span>{b.item_name}</span>
-                  <span className="text-slate-500">
+                  <span className="text-muted">
                     {b.expiry_date ?? 'no expiry'} · {b.remaining_quantity}
                   </span>
                 </li>

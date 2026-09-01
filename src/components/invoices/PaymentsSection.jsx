@@ -81,16 +81,16 @@ export function PaymentsSection({ invoice }) {
 
   return (
     <div className="mt-8">
-      <h2 className="mb-2 text-lg font-semibold text-slate-800">Payments</h2>
-      <p className="mb-4 text-sm text-slate-500">
+      <h2 className="mb-2 text-lg font-semibold text-ink">Payments</h2>
+      <p className="mb-4 text-sm text-muted">
         Paid {balance?.amount_paid ?? 0} of {invoice.grand_total} — balance due {balance?.balance_due ?? invoice.grand_total}
       </p>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       <table className="mb-4 w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-slate-500">
+          <tr className="border-b border-slate-200 text-left text-muted">
             <th className="py-2 pr-4">Date</th>
             <th className="py-2 pr-4">Amount</th>
             <th className="py-2 pr-4">Mode</th>
@@ -113,7 +113,7 @@ export function PaymentsSection({ invoice }) {
                     <button
                       onClick={() => handleCancelPayment(p)}
                       disabled={cancellingId === p.id}
-                      className="text-sm text-red-600 hover:underline"
+                      className="text-sm text-clay hover:underline"
                     >
                       {cancellingId === p.id ? 'Cancelling…' : 'Cancel'}
                     </button>
@@ -124,7 +124,7 @@ export function PaymentsSection({ invoice }) {
           ))}
           {payments.length === 0 && (
             <tr>
-              <td colSpan={6} className="py-4 text-slate-400">
+              <td colSpan={6} className="py-4 text-muted">
                 No payments recorded yet.
               </td>
             </tr>
@@ -135,7 +135,7 @@ export function PaymentsSection({ invoice }) {
       {canEdit && invoice.status === 'posted' && balance?.balance_due > 0 && (
         <form onSubmit={handleRecordPayment} className="flex flex-wrap items-end gap-3">
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Bank/cash account</span>
+            <span className="mb-1 block text-muted">Bank/cash account</span>
             <select
               required
               value={bankAccountId}
@@ -151,7 +151,7 @@ export function PaymentsSection({ invoice }) {
             </select>
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Amount</span>
+            <span className="mb-1 block text-muted">Amount</span>
             <input
               type="number"
               required
@@ -164,7 +164,7 @@ export function PaymentsSection({ invoice }) {
             />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Date</span>
+            <span className="mb-1 block text-muted">Date</span>
             <input
               type="date"
               required
@@ -174,7 +174,7 @@ export function PaymentsSection({ invoice }) {
             />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Mode</span>
+            <span className="mb-1 block text-muted">Mode</span>
             <select value={mode} onChange={(e) => setMode(e.target.value)} className="rounded border border-slate-300 px-3 py-2">
               {MODES.map((m) => (
                 <option key={m} value={m}>
@@ -184,7 +184,7 @@ export function PaymentsSection({ invoice }) {
             </select>
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Bank ref</span>
+            <span className="mb-1 block text-muted">Bank ref</span>
             <input
               type="text"
               placeholder="cheque/UTR no."
@@ -196,7 +196,7 @@ export function PaymentsSection({ invoice }) {
           <button
             type="submit"
             disabled={submitting}
-            className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+            className="rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
             {submitting ? 'Recording…' : 'Record Payment'}
           </button>

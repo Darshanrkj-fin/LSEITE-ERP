@@ -104,23 +104,23 @@ export function Reconciliation() {
     load()
   }
 
-  if (loading) return <p className="text-slate-500">Loading…</p>
+  if (loading) return <p className="text-muted">Loading…</p>
 
   return (
     <div className="max-w-4xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Reconciliation</h1>
-      <p className="mb-6 text-sm text-slate-500">
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Reconciliation</h1>
+      <p className="mb-6 text-sm text-muted">
         Match a bank transaction to the payment it corresponds to. Selecting a transaction pre-selects its closest
         likely payment by amount and date — review it (or pick a different one) before confirming. Nothing is
         matched automatically.
       </p>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       {canEdit && (
         <div className="mb-6 grid grid-cols-2 gap-6">
           <div>
-            <h2 className="mb-2 text-sm font-semibold text-slate-700">Unmatched bank transactions</h2>
+            <h2 className="mb-2 text-sm font-semibold text-ink">Unmatched bank transactions</h2>
             <div className="max-h-72 overflow-auto rounded border border-slate-200">
               {unmatchedTxns.map((t) => {
                 const suggestion = suggestPayment(t, unmatchedPayments)
@@ -141,7 +141,7 @@ export function Reconciliation() {
                         {t.transaction_date} — {t.amount} {t.description && `(${t.description})`}
                       </span>
                       {suggestion && (
-                        <span className="block text-xs text-slate-400">
+                        <span className="block text-xs text-muted">
                           Suggested: {suggestion.invoices?.invoice_number} · {suggestion.amount} · {suggestion.payment_date}
                         </span>
                       )}
@@ -149,12 +149,12 @@ export function Reconciliation() {
                   </label>
                 )
               })}
-              {unmatchedTxns.length === 0 && <p className="p-3 text-sm text-slate-400">None.</p>}
+              {unmatchedTxns.length === 0 && <p className="p-3 text-sm text-muted">None.</p>}
             </div>
           </div>
 
           <div>
-            <h2 className="mb-2 text-sm font-semibold text-slate-700">Unmatched payments</h2>
+            <h2 className="mb-2 text-sm font-semibold text-ink">Unmatched payments</h2>
             <div className="max-h-72 overflow-auto rounded border border-slate-200">
               {unmatchedPayments.map((p) => (
                 <label key={p.id} className="flex cursor-pointer items-center gap-2 border-b border-slate-100 px-3 py-2 text-sm hover:bg-slate-50">
@@ -169,7 +169,7 @@ export function Reconciliation() {
                   </span>
                 </label>
               ))}
-              {unmatchedPayments.length === 0 && <p className="p-3 text-sm text-slate-400">None.</p>}
+              {unmatchedPayments.length === 0 && <p className="p-3 text-sm text-muted">None.</p>}
             </div>
           </div>
         </div>
@@ -179,16 +179,16 @@ export function Reconciliation() {
         <button
           onClick={handleMatch}
           disabled={!selectedTxnId || !selectedPaymentId || working}
-          className="mb-8 rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+          className="mb-8 rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
         >
           {working ? 'Matching…' : 'Match Selected'}
         </button>
       )}
 
-      <h2 className="mb-2 text-sm font-semibold text-slate-700">Matched</h2>
+      <h2 className="mb-2 text-sm font-semibold text-ink">Matched</h2>
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-slate-500">
+          <tr className="border-b border-slate-200 text-left text-muted">
             <th className="py-2 pr-4">Bank transaction</th>
             <th className="py-2 pr-4">Payment</th>
             {canEdit && <th className="py-2 pr-4">Actions</th>}
@@ -205,7 +205,7 @@ export function Reconciliation() {
               </td>
               {canEdit && (
                 <td className="py-2 pr-4">
-                  <button onClick={() => handleUnmatch(txn.id)} className="text-sm text-red-600 hover:underline">
+                  <button onClick={() => handleUnmatch(txn.id)} className="text-sm text-clay hover:underline">
                     Unmatch
                   </button>
                 </td>
@@ -214,7 +214,7 @@ export function Reconciliation() {
           ))}
           {matched.length === 0 && (
             <tr>
-              <td colSpan={3} className="py-4 text-slate-400">
+              <td colSpan={3} className="py-4 text-muted">
                 No matches yet.
               </td>
             </tr>

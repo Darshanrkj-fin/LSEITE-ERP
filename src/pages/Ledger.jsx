@@ -98,19 +98,19 @@ export function Ledger() {
 
   return (
     <div className="max-w-4xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Ledger</h1>
-      <p className="mb-6 text-sm text-slate-500">Account-wise or party-wise transaction history with a running balance.</p>
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Ledger</h1>
+      <p className="mb-6 text-sm text-muted">Account-wise or party-wise transaction history with a running balance.</p>
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <label className="text-sm">
-          <span className="mb-1 block text-slate-600">View</span>
+          <span className="mb-1 block text-muted">View</span>
           <select value={mode} onChange={(e) => setMode(e.target.value)} className="rounded border border-slate-300 px-3 py-2">
             <option value="account">Account-wise</option>
             <option value="party">Party-wise</option>
           </select>
         </label>
         <label className="text-sm">
-          <span className="mb-1 block text-slate-600">{mode === 'account' ? 'Account' : 'Party'}</span>
+          <span className="mb-1 block text-muted">{mode === 'account' ? 'Account' : 'Party'}</span>
           <select
             value={selectedId}
             onChange={(e) => setSelectedId(e.target.value)}
@@ -136,13 +136,13 @@ export function Ledger() {
         )}
       </div>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
-      {loading && <p className="text-slate-500">Loading…</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
+      {loading && <p className="text-muted">Loading…</p>}
 
       {!loading && selectedId && (
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-200 text-left text-slate-500">
+            <tr className="border-b border-slate-200 text-left text-muted">
               <th className="py-2 pr-4">Date</th>
               <th className="py-2 pr-4">Account</th>
               {mode === 'party' && <th className="py-2 pr-4">Reference</th>}
@@ -164,7 +164,7 @@ export function Ledger() {
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={mode === 'party' ? 6 : 5} className="py-4 text-slate-400">
+                <td colSpan={mode === 'party' ? 6 : 5} className="py-4 text-muted">
                   No entries.
                 </td>
               </tr>

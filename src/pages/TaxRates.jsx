@@ -97,21 +97,21 @@ export function TaxRates() {
     load()
   }
 
-  if (loading) return <p className="text-slate-500">Loading…</p>
+  if (loading) return <p className="text-muted">Loading…</p>
 
   return (
     <div className="max-w-3xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Tax Rates</h1>
-      <p className="mb-6 text-sm text-slate-500">
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Tax Rates</h1>
+      <p className="mb-6 text-sm text-muted">
         GST rates by HSN/SAC code. Invoicing reads from this table — rates are never hardcoded.
         {!canEdit && ' Only an admin can add or change rates.'}
       </p>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       <table className="mb-6 w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-slate-500">
+          <tr className="border-b border-slate-200 text-left text-muted">
             <th className="py-2 pr-4">HSN/SAC</th>
             <th className="py-2 pr-4">Rate (%)</th>
             <th className="py-2 pr-4">Effective from</th>
@@ -161,11 +161,11 @@ export function TaxRates() {
                     <button
                       onClick={() => saveEdit(rate.id)}
                       disabled={savingEdit}
-                      className="text-sm text-slate-800 hover:underline"
+                      className="text-sm text-ink hover:underline"
                     >
                       Save
                     </button>
-                    <button onClick={cancelEdit} className="text-sm text-slate-500 hover:underline">
+                    <button onClick={cancelEdit} className="text-sm text-muted hover:underline">
                       Cancel
                     </button>
                   </td>
@@ -178,10 +178,10 @@ export function TaxRates() {
                   <td className="py-2 pr-4">{rate.effective_to || '—'}</td>
                   {canEdit && (
                     <td className="space-x-2 py-2 pr-4">
-                      <button onClick={() => startEdit(rate)} className="text-sm text-slate-800 hover:underline">
+                      <button onClick={() => startEdit(rate)} className="text-sm text-ink hover:underline">
                         Edit
                       </button>
-                      <button onClick={() => handleDelete(rate)} className="text-sm text-red-600 hover:underline">
+                      <button onClick={() => handleDelete(rate)} className="text-sm text-clay hover:underline">
                         Delete
                       </button>
                     </td>
@@ -192,7 +192,7 @@ export function TaxRates() {
           ))}
           {rates.length === 0 && (
             <tr>
-              <td colSpan={5} className="py-4 text-slate-400">
+              <td colSpan={5} className="py-4 text-muted">
                 No tax rates yet.
               </td>
             </tr>
@@ -203,7 +203,7 @@ export function TaxRates() {
       {canEdit && (
         <form onSubmit={handleAdd} className="flex flex-wrap items-end gap-3">
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">HSN/SAC code</span>
+            <span className="mb-1 block text-muted">HSN/SAC code</span>
             <input
               required
               value={newRate.hsn_sac_code}
@@ -212,7 +212,7 @@ export function TaxRates() {
             />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Rate (%)</span>
+            <span className="mb-1 block text-muted">Rate (%)</span>
             <input
               type="number"
               required
@@ -224,7 +224,7 @@ export function TaxRates() {
             />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Effective from</span>
+            <span className="mb-1 block text-muted">Effective from</span>
             <input
               type="date"
               required
@@ -234,7 +234,7 @@ export function TaxRates() {
             />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Effective to</span>
+            <span className="mb-1 block text-muted">Effective to</span>
             <input
               type="date"
               placeholder="leave blank if still active"
@@ -246,7 +246,7 @@ export function TaxRates() {
           <button
             type="submit"
             disabled={adding}
-            className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+            className="rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
             {adding ? 'Adding…' : 'Add rate'}
           </button>

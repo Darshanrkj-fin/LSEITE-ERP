@@ -114,12 +114,12 @@ export function CompanyProfile() {
     setInfo('Company created.')
   }
 
-  if (loading) return <p className="text-slate-500">Loading…</p>
+  if (loading) return <p className="text-muted">Loading…</p>
 
   return (
     <div className="max-w-xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Company Profile</h1>
-      <p className="mb-6 text-sm text-slate-500">
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Company Profile</h1>
+      <p className="mb-6 text-sm text-muted">
         {company ? 'GSTIN, address, and bank details.' : 'No company set up yet — create one to get started.'}
       </p>
 
@@ -160,14 +160,14 @@ export function CompanyProfile() {
           placeholder="Leave blank if not MSME-registered"
         />
 
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p className="text-sm text-clay">{error}</p>}
         {info && <p className="text-sm text-green-600">{info}</p>}
 
         {(canEdit || !company) && (
           <button
             type="submit"
             disabled={saving}
-            className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+            className="rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
             {saving ? 'Saving…' : company ? 'Save changes' : 'Create company'}
           </button>
@@ -180,11 +180,11 @@ export function CompanyProfile() {
 function Field({ label, ...inputProps }) {
   return (
     <label className="block text-sm">
-      <span className="mb-1 block text-slate-600">{label}</span>
+      <span className="mb-1 block text-muted">{label}</span>
       <input
         type="text"
         {...inputProps}
-        className="w-full rounded border border-slate-300 px-3 py-2 disabled:bg-slate-100 disabled:text-slate-500"
+        className="w-full rounded border border-slate-300 px-3 py-2 disabled:bg-slate-100 disabled:text-muted"
       />
     </label>
   )

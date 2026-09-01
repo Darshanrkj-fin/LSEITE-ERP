@@ -75,11 +75,11 @@ export function SubscriptionCycleForm({ basePath }) {
 
   return (
     <div className="max-w-2xl">
-      <h1 className="mb-6 text-xl font-semibold text-slate-800">New Subscription Cycle</h1>
+      <h1 className="mb-6 text-xl font-semibold font-display text-ink">New Subscription Cycle</h1>
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <label className="block text-sm">
-          <span className="mb-1 block text-slate-600">Subscription</span>
+          <span className="mb-1 block text-muted">Subscription</span>
           <select
             required
             value={subscriptionId}
@@ -96,7 +96,7 @@ export function SubscriptionCycleForm({ basePath }) {
         </label>
 
         <label className="block text-sm">
-          <span className="mb-1 block text-slate-600">Cycle date</span>
+          <span className="mb-1 block text-muted">Cycle date</span>
           <input
             type="date"
             required
@@ -107,10 +107,10 @@ export function SubscriptionCycleForm({ basePath }) {
         </label>
 
         <div>
-          <p className="mb-2 text-sm font-medium text-slate-700">Items this cycle</p>
+          <p className="mb-2 text-sm font-medium text-ink">Items this cycle</p>
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-slate-200 text-left text-slate-500">
+              <tr className="border-b border-slate-200 text-left text-muted">
                 <th className="py-2 pr-4">Item</th>
                 <th className="py-2 pr-4">Quantity</th>
                 <th className="py-2 pr-4">Rate</th>
@@ -156,7 +156,7 @@ export function SubscriptionCycleForm({ basePath }) {
                   </td>
                   <td className="py-2 pr-4">
                     {lines.length > 1 && (
-                      <button type="button" onClick={() => removeLine(i)} className="text-sm text-red-600 hover:underline">
+                      <button type="button" onClick={() => removeLine(i)} className="text-sm text-clay hover:underline">
                         Remove
                       </button>
                     )}
@@ -170,12 +170,12 @@ export function SubscriptionCycleForm({ basePath }) {
           </button>
         </div>
 
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p className="text-sm text-clay">{error}</p>}
 
         <button
           type="submit"
           disabled={submitting}
-          className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+          className="rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
         >
           {submitting ? 'Saving…' : 'Save Draft Cycle'}
         </button>

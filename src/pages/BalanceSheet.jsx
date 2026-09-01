@@ -48,7 +48,7 @@ export function BalanceSheet() {
 
   const Section = ({ title, items, total }) => (
     <>
-      <h2 className="mb-2 text-sm font-semibold text-slate-700">{title}</h2>
+      <h2 className="mb-2 text-sm font-semibold text-ink">{title}</h2>
       <table className="mb-4 w-full text-sm">
         <tbody>
           {items.map((r) => (
@@ -59,7 +59,7 @@ export function BalanceSheet() {
           ))}
           {items.length === 0 && (
             <tr>
-              <td className="py-2 text-slate-400">None.</td>
+              <td className="py-2 text-muted">None.</td>
             </tr>
           )}
           <tr className="font-semibold">
@@ -73,15 +73,15 @@ export function BalanceSheet() {
 
   return (
     <div className="max-w-2xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Balance Sheet</h1>
-      <p className="mb-6 text-sm text-slate-500">
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Balance Sheet</h1>
+      <p className="mb-6 text-sm text-muted">
         Assets, liabilities, and equity as of a date. "Current Earnings" folds in cumulative profit/loss to date,
         since there's no separate retained-earnings closing entry in this system.
       </p>
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <label className="text-sm">
-          <span className="mb-1 block text-slate-600">As of</span>
+          <span className="mb-1 block text-muted">As of</span>
           <input
             type="date"
             value={asOf}
@@ -97,17 +97,17 @@ export function BalanceSheet() {
         </button>
       </div>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       {loading ? (
-        <p className="text-slate-500">Loading…</p>
+        <p className="text-muted">Loading…</p>
       ) : (
         <>
           <Section title="Assets" items={assets} total={totalAssets} />
           <Section title="Liabilities" items={liabilities} total={totalLiabilities} />
           <Section title="Equity" items={equity} total={totalEquity} />
 
-          <p className={`text-sm ${balanced ? 'text-green-600' : 'text-red-600'}`}>
+          <p className={`text-sm ${balanced ? 'text-green-600' : 'text-clay'}`}>
             {balanced
               ? '✓ Assets = Liabilities + Equity'
               : `✗ Not balanced (assets ${totalAssets.toFixed(2)} vs liabilities + equity ${(totalLiabilities + totalEquity).toFixed(2)}) — this should never happen, please report it.`}

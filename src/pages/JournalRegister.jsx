@@ -61,16 +61,16 @@ export function JournalRegister() {
 
   return (
     <div className="max-w-4xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Journal Register</h1>
-      <p className="mb-6 text-sm text-slate-500">Every journal entry leg across the whole company, in date order.</p>
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Journal Register</h1>
+      <p className="mb-6 text-sm text-muted">Every journal entry leg across the whole company, in date order.</p>
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <label className="text-sm">
-          <span className="mb-1 block text-slate-600">From</span>
+          <span className="mb-1 block text-muted">From</span>
           <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="rounded border border-slate-300 px-3 py-2" />
         </label>
         <label className="text-sm">
-          <span className="mb-1 block text-slate-600">To</span>
+          <span className="mb-1 block text-muted">To</span>
           <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="rounded border border-slate-300 px-3 py-2" />
         </label>
         <button
@@ -103,14 +103,14 @@ export function JournalRegister() {
         </button>
       </div>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       {loading ? (
-        <p className="text-slate-500">Loading…</p>
+        <p className="text-muted">Loading…</p>
       ) : (
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-200 text-left text-slate-500">
+            <tr className="border-b border-slate-200 text-left text-muted">
               {COLUMNS.map((c) => (
                 <th key={c.key} className="py-2 pr-4">
                   {c.label}
@@ -130,7 +130,7 @@ export function JournalRegister() {
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={5} className="py-4 text-slate-400">
+                <td colSpan={5} className="py-4 text-muted">
                   No entries in this period.
                 </td>
               </tr>

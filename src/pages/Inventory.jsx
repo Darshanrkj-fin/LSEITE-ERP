@@ -25,21 +25,21 @@ export function Inventory() {
     }
   }, [])
 
-  if (loading) return <p className="text-slate-500">Loading…</p>
+  if (loading) return <p className="text-muted">Loading…</p>
 
   return (
     <div className="max-w-2xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Inventory</h1>
-      <p className="mb-6 text-sm text-slate-500">
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Inventory</h1>
+      <p className="mb-6 text-sm text-muted">
         Current stock per item, updated automatically as sales and purchase invoices post. Set the low-stock alert
         threshold on the Item Master screen.
       </p>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-slate-500">
+          <tr className="border-b border-slate-200 text-left text-muted">
             <th className="py-2 pr-4">Item</th>
             <th className="py-2 pr-4">HSN/SAC</th>
             <th className="py-2 pr-4">Unit</th>
@@ -55,7 +55,7 @@ export function Inventory() {
                 <td className="py-2 pr-4">{row.name}</td>
                 <td className="py-2 pr-4">{row.hsn_sac_code}</td>
                 <td className="py-2 pr-4">{row.unit}</td>
-                <td className={`py-2 pr-4 ${isLow ? 'font-semibold text-red-700' : ''}`}>
+                <td className={`py-2 pr-4 ${isLow ? 'font-semibold text-clay' : ''}`}>
                   {row.current_stock}
                   {isLow && ' — Low stock'}
                 </td>
@@ -65,7 +65,7 @@ export function Inventory() {
           })}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={5} className="py-4 text-slate-400">
+              <td colSpan={5} className="py-4 text-muted">
                 No stock-tracked items yet.
               </td>
             </tr>

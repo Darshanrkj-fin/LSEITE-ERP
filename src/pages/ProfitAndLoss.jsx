@@ -54,16 +54,16 @@ export function ProfitAndLoss() {
 
   return (
     <div className="max-w-2xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Profit &amp; Loss</h1>
-      <p className="mb-6 text-sm text-slate-500">Income and expenses posted within a period.</p>
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Profit &amp; Loss</h1>
+      <p className="mb-6 text-sm text-muted">Income and expenses posted within a period.</p>
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <label className="text-sm">
-          <span className="mb-1 block text-slate-600">From</span>
+          <span className="mb-1 block text-muted">From</span>
           <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="rounded border border-slate-300 px-3 py-2" />
         </label>
         <label className="text-sm">
-          <span className="mb-1 block text-slate-600">To</span>
+          <span className="mb-1 block text-muted">To</span>
           <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="rounded border border-slate-300 px-3 py-2" />
         </label>
         <button
@@ -88,13 +88,13 @@ export function ProfitAndLoss() {
         </button>
       </div>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       {loading ? (
-        <p className="text-slate-500">Loading…</p>
+        <p className="text-muted">Loading…</p>
       ) : (
         <>
-          <h2 className="mb-2 text-sm font-semibold text-slate-700">Income</h2>
+          <h2 className="mb-2 text-sm font-semibold text-ink">Income</h2>
           <table className="mb-4 w-full text-sm">
             <tbody>
               {income.map((r) => (
@@ -105,7 +105,7 @@ export function ProfitAndLoss() {
               ))}
               {income.length === 0 && (
                 <tr>
-                  <td className="py-2 text-slate-400">No income in this period.</td>
+                  <td className="py-2 text-muted">No income in this period.</td>
                 </tr>
               )}
               <tr className="font-semibold">
@@ -115,7 +115,7 @@ export function ProfitAndLoss() {
             </tbody>
           </table>
 
-          <h2 className="mb-2 text-sm font-semibold text-slate-700">Expenses</h2>
+          <h2 className="mb-2 text-sm font-semibold text-ink">Expenses</h2>
           <table className="mb-4 w-full text-sm">
             <tbody>
               {expense.map((r) => (
@@ -126,7 +126,7 @@ export function ProfitAndLoss() {
               ))}
               {expense.length === 0 && (
                 <tr>
-                  <td className="py-2 text-slate-400">No expenses in this period.</td>
+                  <td className="py-2 text-muted">No expenses in this period.</td>
                 </tr>
               )}
               <tr className="font-semibold">
@@ -136,7 +136,7 @@ export function ProfitAndLoss() {
             </tbody>
           </table>
 
-          <p className={`text-base font-semibold ${netProfit >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+          <p className={`text-base font-semibold ${netProfit >= 0 ? 'text-green-700' : 'text-clay'}`}>
             Net {netProfit >= 0 ? 'Profit' : 'Loss'}: {Math.abs(netProfit).toFixed(2)}
           </p>
         </>

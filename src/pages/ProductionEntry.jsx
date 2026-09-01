@@ -77,8 +77,8 @@ export function ProductionEntry() {
 
   return (
     <div className="max-w-2xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Production Entry</h1>
-      <p className="mb-6 text-sm text-slate-500">
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Production Entry</h1>
+      <p className="mb-6 text-sm text-muted">
         Log one manufacturing batch: what was made, how much, and which raw materials went into it. There's no fixed
         recipe — enter whatever was actually consumed this time. Raw materials are drawn oldest-expiry-first from
         purchased stock, and their cost carries into this batch's finished-goods cost automatically.
@@ -86,7 +86,7 @@ export function ProductionEntry() {
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <label className="block text-sm">
-          <span className="mb-1 block text-slate-600">Finished good produced</span>
+          <span className="mb-1 block text-muted">Finished good produced</span>
           <select
             required
             value={finishedGoodId}
@@ -104,7 +104,7 @@ export function ProductionEntry() {
 
         <div className="flex flex-wrap gap-3">
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Quantity produced</span>
+            <span className="mb-1 block text-muted">Quantity produced</span>
             <input
               type="number"
               required
@@ -116,7 +116,7 @@ export function ProductionEntry() {
             />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Production date</span>
+            <span className="mb-1 block text-muted">Production date</span>
             <input
               type="date"
               required
@@ -126,7 +126,7 @@ export function ProductionEntry() {
             />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Expiry date</span>
+            <span className="mb-1 block text-muted">Expiry date</span>
             <input
               type="date"
               required
@@ -136,7 +136,7 @@ export function ProductionEntry() {
             />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Custom order (optional)</span>
+            <span className="mb-1 block text-muted">Custom order (optional)</span>
             <select
               value={customOrderId}
               onChange={(e) => setCustomOrderId(e.target.value)}
@@ -153,10 +153,10 @@ export function ProductionEntry() {
         </div>
 
         <div>
-          <p className="mb-2 text-sm font-medium text-slate-700">Raw materials consumed</p>
+          <p className="mb-2 text-sm font-medium text-ink">Raw materials consumed</p>
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-slate-200 text-left text-slate-500">
+              <tr className="border-b border-slate-200 text-left text-muted">
                 <th className="py-2 pr-4">Raw material</th>
                 <th className="py-2 pr-4">Quantity</th>
                 <th className="py-2 pr-4" />
@@ -191,7 +191,7 @@ export function ProductionEntry() {
                   </td>
                   <td className="py-2 pr-4">
                     {consumptions.length > 1 && (
-                      <button type="button" onClick={() => removeConsumption(i)} className="text-sm text-red-600 hover:underline">
+                      <button type="button" onClick={() => removeConsumption(i)} className="text-sm text-clay hover:underline">
                         Remove
                       </button>
                     )}
@@ -205,13 +205,13 @@ export function ProductionEntry() {
           </button>
         </div>
 
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p className="text-sm text-clay">{error}</p>}
         {info && <p className="text-sm text-green-600">{info}</p>}
 
         <button
           type="submit"
           disabled={submitting}
-          className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+          className="rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
         >
           {submitting ? 'Recording…' : 'Record Production'}
         </button>

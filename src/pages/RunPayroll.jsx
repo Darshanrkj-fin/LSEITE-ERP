@@ -108,15 +108,15 @@ export function RunPayroll() {
 
   return (
     <div className="max-w-2xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Run Payroll</h1>
-      <p className="mb-6 text-sm text-slate-500">
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Run Payroll</h1>
+      <p className="mb-6 text-sm text-muted">
         Posts one employee's salary for a month to the ledger and generates a payslip. Deduction amounts are entered
         directly — this app doesn't compute PF/ESI/professional tax itself; confirm the correct figures with your CA.
       </p>
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <label className="block text-sm">
-          <span className="mb-1 block text-slate-600">Employee</span>
+          <span className="mb-1 block text-muted">Employee</span>
           <select
             required
             value={employeeId}
@@ -133,7 +133,7 @@ export function RunPayroll() {
         </label>
 
         <label className="block text-sm">
-          <span className="mb-1 block text-slate-600">Month</span>
+          <span className="mb-1 block text-muted">Month</span>
           <input
             type="month"
             required
@@ -144,7 +144,7 @@ export function RunPayroll() {
         </label>
 
         <label className="block text-sm">
-          <span className="mb-1 block text-slate-600">Gross salary</span>
+          <span className="mb-1 block text-muted">Gross salary</span>
           <input
             type="number"
             required
@@ -158,25 +158,25 @@ export function RunPayroll() {
 
         <div className="flex flex-wrap gap-3">
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">PF</span>
+            <span className="mb-1 block text-muted">PF</span>
             <input type="number" min="0" step="0.01" value={pf} onChange={(e) => setPf(e.target.value)} className="w-24 rounded border border-slate-300 px-3 py-2" />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">ESI</span>
+            <span className="mb-1 block text-muted">ESI</span>
             <input type="number" min="0" step="0.01" value={esi} onChange={(e) => setEsi(e.target.value)} className="w-24 rounded border border-slate-300 px-3 py-2" />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Professional tax</span>
+            <span className="mb-1 block text-muted">Professional tax</span>
             <input type="number" min="0" step="0.01" value={pt} onChange={(e) => setPt(e.target.value)} className="w-24 rounded border border-slate-300 px-3 py-2" />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Other</span>
+            <span className="mb-1 block text-muted">Other</span>
             <input type="number" min="0" step="0.01" value={other} onChange={(e) => setOther(e.target.value)} className="w-24 rounded border border-slate-300 px-3 py-2" />
           </label>
         </div>
 
         <label className="block text-sm">
-          <span className="mb-1 block text-slate-600">Salary expense account</span>
+          <span className="mb-1 block text-muted">Salary expense account</span>
           <select
             required
             value={expenseAccountId}
@@ -193,7 +193,7 @@ export function RunPayroll() {
         </label>
 
         <label className="block text-sm">
-          <span className="mb-1 block text-slate-600">Bank/cash account</span>
+          <span className="mb-1 block text-muted">Bank/cash account</span>
           <select
             required
             value={bankAccountId}
@@ -213,14 +213,14 @@ export function RunPayroll() {
           Total deductions: {totalDeductions.toFixed(2)} — Net pay: <span className="font-semibold">{netPay.toFixed(2)}</span>
         </p>
 
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p className="text-sm text-clay">{error}</p>}
         {info && <p className="text-sm text-green-600">{info}</p>}
 
         <div className="flex gap-3">
           <button
             type="submit"
             disabled={submitting}
-            className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+            className="rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
             {submitting ? 'Posting…' : 'Run Payroll'}
           </button>

@@ -13,7 +13,7 @@ export function ManageUsers() {
   const [submitting, setSubmitting] = useState(false)
 
   if (!canManageUsers) {
-    return <p className="text-slate-500">You don't have access to this page.</p>
+    return <p className="text-muted">You don't have access to this page.</p>
   }
 
   const handleSubmit = async (e) => {
@@ -48,15 +48,15 @@ export function ManageUsers() {
 
   return (
     <div className="max-w-sm">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Manage Users</h1>
-      <p className="mb-6 text-sm text-slate-500">
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Manage Users</h1>
+      <p className="mb-6 text-sm text-muted">
         Create a user or reset a password directly — no email is ever sent, since usernames map to a fake internal
         address.
       </p>
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <label className="block text-sm">
-          <span className="mb-1 block text-slate-600">Action</span>
+          <span className="mb-1 block text-muted">Action</span>
           <select
             value={form.action}
             onChange={(e) => setForm((f) => ({ ...f, action: e.target.value }))}
@@ -68,7 +68,7 @@ export function ManageUsers() {
         </label>
 
         <label className="block text-sm">
-          <span className="mb-1 block text-slate-600">Username</span>
+          <span className="mb-1 block text-muted">Username</span>
           <input
             type="text"
             required
@@ -79,7 +79,7 @@ export function ManageUsers() {
         </label>
 
         <label className="block text-sm">
-          <span className="mb-1 block text-slate-600">Password</span>
+          <span className="mb-1 block text-muted">Password</span>
           <input
             type="password"
             required
@@ -90,13 +90,13 @@ export function ManageUsers() {
           />
         </label>
 
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p className="text-sm text-clay">{error}</p>}
         {info && <p className="text-sm text-green-600">{info}</p>}
 
         <button
           type="submit"
           disabled={submitting}
-          className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+          className="rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
         >
           {submitting ? 'Working…' : form.action === 'create-user' ? 'Create user' : 'Reset password'}
         </button>

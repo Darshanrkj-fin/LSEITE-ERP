@@ -95,12 +95,12 @@ export function PayrollRegister() {
 
   return (
     <div className="max-w-4xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Payroll Register</h1>
-      <p className="mb-6 text-sm text-slate-500">Every payroll run posted for the selected month.</p>
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Payroll Register</h1>
+      <p className="mb-6 text-sm text-muted">Every payroll run posted for the selected month.</p>
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <label className="text-sm">
-          <span className="mb-1 block text-slate-600">Month</span>
+          <span className="mb-1 block text-muted">Month</span>
           <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="rounded border border-slate-300 px-3 py-2" />
         </label>
         <button
@@ -112,14 +112,14 @@ export function PayrollRegister() {
         </button>
       </div>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       {loading ? (
-        <p className="text-slate-500">Loading…</p>
+        <p className="text-muted">Loading…</p>
       ) : (
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-200 text-left text-slate-500">
+            <tr className="border-b border-slate-200 text-left text-muted">
               <th className="py-2 pr-4">Employee</th>
               <th className="py-2 pr-4">Gross</th>
               <th className="py-2 pr-4">PF</th>
@@ -146,7 +146,7 @@ export function PayrollRegister() {
                   <button
                     onClick={() => handleDownloadPayslip(r.id)}
                     disabled={downloadingId === r.id}
-                    className="text-sm text-slate-800 hover:underline"
+                    className="text-sm text-ink hover:underline"
                   >
                     {downloadingId === r.id ? 'Preparing…' : 'Download'}
                   </button>
@@ -155,7 +155,7 @@ export function PayrollRegister() {
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={9} className="py-4 text-slate-400">
+                <td colSpan={9} className="py-4 text-muted">
                   No payroll runs for this month.
                 </td>
               </tr>

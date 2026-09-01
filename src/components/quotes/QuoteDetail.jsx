@@ -106,21 +106,21 @@ export function QuoteDetail() {
     }
   }
 
-  if (loading) return <p className="text-slate-500">Loading…</p>
-  if (error && !quote) return <p className="text-sm text-red-600">{error}</p>
+  if (loading) return <p className="text-muted">Loading…</p>
+  if (error && !quote) return <p className="text-sm text-clay">{error}</p>
 
   const nextActions = canEdit ? NEXT_STATUS_ACTIONS[quote.status] ?? [] : []
 
   return (
     <div className="max-w-3xl">
-      <Link to="/quotes" className="mb-4 inline-block text-sm text-slate-500 hover:underline">
+      <Link to="/quotes" className="mb-4 inline-block text-sm text-muted hover:underline">
         ← Back
       </Link>
 
       <div className="mb-6 flex items-start justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-slate-800">{quote.quote_number}</h1>
-          <p className="text-sm text-slate-500">
+          <h1 className="text-xl font-semibold font-display text-ink">{quote.quote_number}</h1>
+          <p className="text-sm text-muted">
             Customer: {quote.parties?.name} · {quote.quote_date} · <span className="capitalize">{quote.status}</span>
             {quote.valid_until && <> · Valid until {quote.valid_until}</>}
           </p>
@@ -146,7 +146,7 @@ export function QuoteDetail() {
           {canEdit && quote.status === 'accepted' && (
             <button
               onClick={() => setShowConvert((v) => !v)}
-              className="rounded bg-slate-800 px-3 py-1 text-sm font-medium text-white hover:bg-slate-700"
+              className="rounded bg-ink px-3 py-1 text-sm font-medium text-white hover:opacity-90"
             >
               Convert to Invoice
             </button>
@@ -157,7 +157,7 @@ export function QuoteDetail() {
       {showConvert && (
         <div className="mb-4 flex flex-wrap items-end gap-3 rounded border border-slate-200 p-3">
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Revenue account</span>
+            <span className="mb-1 block text-muted">Revenue account</span>
             <select
               value={convertAccountId}
               onChange={(e) => setConvertAccountId(e.target.value)}
@@ -174,19 +174,19 @@ export function QuoteDetail() {
           <button
             onClick={handleConvert}
             disabled={converting || !convertAccountId}
-            className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+            className="rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
             {converting ? 'Converting…' : 'Confirm Conversion'}
           </button>
         </div>
       )}
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       {quote.status === 'converted' && (
         <p className="mb-4 text-sm text-slate-600">
           Converted to invoice{' '}
-          <Link to={`/sales-invoices/${quote.converted_invoice_id}`} className="text-slate-800 hover:underline">
+          <Link to={`/sales-invoices/${quote.converted_invoice_id}`} className="text-ink hover:underline">
             view invoice
           </Link>
           .
@@ -195,7 +195,7 @@ export function QuoteDetail() {
 
       <table className="mb-6 w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-slate-500">
+          <tr className="border-b border-slate-200 text-left text-muted">
             <th className="py-2 pr-4">Item</th>
             <th className="py-2 pr-4">HSN/SAC</th>
             <th className="py-2 pr-4">Qty</th>
@@ -228,19 +228,19 @@ export function QuoteDetail() {
         <table className="text-sm">
           <tbody>
             <tr>
-              <td className="py-1 pr-4 text-slate-500">Subtotal</td>
+              <td className="py-1 pr-4 text-muted">Subtotal</td>
               <td className="py-1 text-right">{quote.subtotal}</td>
             </tr>
             <tr>
-              <td className="py-1 pr-4 text-slate-500">CGST</td>
+              <td className="py-1 pr-4 text-muted">CGST</td>
               <td className="py-1 text-right">{quote.cgst_total}</td>
             </tr>
             <tr>
-              <td className="py-1 pr-4 text-slate-500">SGST</td>
+              <td className="py-1 pr-4 text-muted">SGST</td>
               <td className="py-1 text-right">{quote.sgst_total}</td>
             </tr>
             <tr>
-              <td className="py-1 pr-4 text-slate-500">IGST</td>
+              <td className="py-1 pr-4 text-muted">IGST</td>
               <td className="py-1 text-right">{quote.igst_total}</td>
             </tr>
             <tr className="font-semibold">

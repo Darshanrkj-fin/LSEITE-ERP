@@ -5,7 +5,7 @@ export function ProtectedRoute({ children }) {
   const { session, loading } = useAuth()
 
   if (loading) {
-    return <div className="flex h-screen items-center justify-center text-slate-500">Loading…</div>
+    return <div className="flex h-screen items-center justify-center text-muted">Loading…</div>
   }
 
   if (!session) {

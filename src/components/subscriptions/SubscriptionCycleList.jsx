@@ -30,14 +30,14 @@ export function SubscriptionCycleList({ basePath }) {
     }
   }, [])
 
-  if (loading) return <p className="text-slate-500">Loading…</p>
+  if (loading) return <p className="text-muted">Loading…</p>
 
   return (
     <div className="max-w-3xl">
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-slate-800">Subscription Cycles</h1>
-          <p className="text-sm text-slate-500">
+          <h1 className="text-xl font-semibold font-display text-ink">Subscription Cycles</h1>
+          <p className="text-sm text-muted">
             One row per billing cycle. Draft cycles are created here ahead of time (or automatically once due) and
             reviewed before finalizing into a real invoice.
           </p>
@@ -45,18 +45,18 @@ export function SubscriptionCycleList({ basePath }) {
         {canEdit && (
           <Link
             to={`${basePath}/new`}
-            className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700"
+            className="rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90"
           >
             New Cycle
           </Link>
         )}
       </div>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-slate-500">
+          <tr className="border-b border-slate-200 text-left text-muted">
             <th className="py-2 pr-4">Customer</th>
             <th className="py-2 pr-4">Cycle date</th>
             <th className="py-2 pr-4">Status</th>
@@ -66,7 +66,7 @@ export function SubscriptionCycleList({ basePath }) {
           {cycles.map((c) => (
             <tr key={c.id} className="border-b border-slate-100">
               <td className="py-2 pr-4">
-                <Link to={`${basePath}/${c.id}`} className="text-slate-800 hover:underline">
+                <Link to={`${basePath}/${c.id}`} className="text-ink hover:underline">
                   {c.subscriptions?.parties?.name}
                 </Link>
               </td>
@@ -76,7 +76,7 @@ export function SubscriptionCycleList({ basePath }) {
           ))}
           {cycles.length === 0 && (
             <tr>
-              <td colSpan={3} className="py-4 text-slate-400">
+              <td colSpan={3} className="py-4 text-muted">
                 No subscription cycles yet.
               </td>
             </tr>

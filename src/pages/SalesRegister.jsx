@@ -119,8 +119,8 @@ export function SalesRegister() {
 
   return (
     <div className="max-w-4xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Sales Register (GSTR-1 style)</h1>
-      <p className="mb-6 text-sm text-slate-500">
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Sales Register (GSTR-1 style)</h1>
+      <p className="mb-6 text-sm text-muted">
         Every sales invoice dated in this period, plus any credit note actually issued in this period (against an
         invoice from any period) — for manual entry into the GST portal or your CA's filing tool. Not a filed
         return; nothing is submitted anywhere automatically. An invoice keeps its original figures here even if it's
@@ -130,11 +130,11 @@ export function SalesRegister() {
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <label className="text-sm">
-          <span className="mb-1 block text-slate-600">From</span>
+          <span className="mb-1 block text-muted">From</span>
           <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="rounded border border-slate-300 px-3 py-2" />
         </label>
         <label className="text-sm">
-          <span className="mb-1 block text-slate-600">To</span>
+          <span className="mb-1 block text-muted">To</span>
           <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="rounded border border-slate-300 px-3 py-2" />
         </label>
         <button
@@ -168,14 +168,14 @@ export function SalesRegister() {
         </button>
       </div>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       {loading ? (
-        <p className="text-slate-500">Loading…</p>
+        <p className="text-muted">Loading…</p>
       ) : (
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-200 text-left text-slate-500">
+            <tr className="border-b border-slate-200 text-left text-muted">
               <th className="py-2 pr-4">Document #</th>
               <th className="py-2 pr-4">Date</th>
               <th className="py-2 pr-4">Customer</th>
@@ -189,10 +189,10 @@ export function SalesRegister() {
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.key} className={`border-b border-slate-100 ${r.kind === 'credit_note' ? 'text-red-700' : ''}`}>
+              <tr key={r.key} className={`border-b border-slate-100 ${r.kind === 'credit_note' ? 'text-clay' : ''}`}>
                 <td className="py-2 pr-4">
                   {r.number}
-                  {r.kind === 'credit_note' && <span className="text-slate-400"> (against {r.against})</span>}
+                  {r.kind === 'credit_note' && <span className="text-muted"> (against {r.against})</span>}
                 </td>
                 <td className="py-2 pr-4">{r.date}</td>
                 <td className="py-2 pr-4">{r.partyName}</td>
@@ -206,7 +206,7 @@ export function SalesRegister() {
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={9} className="py-4 text-slate-400">
+                <td colSpan={9} className="py-4 text-muted">
                   No sales documents in this period.
                 </td>
               </tr>

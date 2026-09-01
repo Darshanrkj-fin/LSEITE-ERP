@@ -24,21 +24,21 @@ export function StockValuation() {
 
   const total = rows.reduce((sum, r) => sum + Number(r.total_value), 0)
 
-  if (loading) return <p className="text-slate-500">Loading…</p>
+  if (loading) return <p className="text-muted">Loading…</p>
 
   return (
     <div className="max-w-3xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Stock Valuation</h1>
-      <p className="mb-6 text-sm text-slate-500">
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Stock Valuation</h1>
+      <p className="mb-6 text-sm text-muted">
         Current stock × cost, right now. Raw materials use the running average cost; finished goods are valued batch
         by batch since each may have been produced at a different cost.
       </p>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-slate-500">
+          <tr className="border-b border-slate-200 text-left text-muted">
             <th className="py-2 pr-4">Item</th>
             <th className="py-2 pr-4">Type</th>
             <th className="py-2 pr-4">Detail</th>
@@ -60,7 +60,7 @@ export function StockValuation() {
           ))}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={6} className="py-4 text-slate-400">
+              <td colSpan={6} className="py-4 text-muted">
                 Nothing in stock yet.
               </td>
             </tr>

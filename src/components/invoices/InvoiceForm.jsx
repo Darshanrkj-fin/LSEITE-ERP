@@ -157,12 +157,12 @@ export function InvoiceForm({ type, basePath }) {
 
   return (
     <div className="max-w-3xl">
-      <h1 className="mb-6 text-xl font-semibold text-slate-800">{labels.title}</h1>
+      <h1 className="mb-6 text-xl font-semibold font-display text-ink">{labels.title}</h1>
 
       <form onSubmit={handleSubmit} className="space-y-6">
         <div className="flex flex-wrap gap-4">
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">{labels.partyLabel}</span>
+            <span className="mb-1 block text-muted">{labels.partyLabel}</span>
             <select
               required
               value={partyId}
@@ -179,7 +179,7 @@ export function InvoiceForm({ type, basePath }) {
           </label>
 
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Invoice date</span>
+            <span className="mb-1 block text-muted">Invoice date</span>
             <input
               type="date"
               required
@@ -190,7 +190,7 @@ export function InvoiceForm({ type, basePath }) {
           </label>
 
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">{labels.accountLabel}</span>
+            <span className="mb-1 block text-muted">{labels.accountLabel}</span>
             <select
               required
               value={accountId}
@@ -208,7 +208,7 @@ export function InvoiceForm({ type, basePath }) {
 
           {type === 'sales' && (
             <label className="text-sm">
-              <span className="mb-1 block text-slate-600">Custom order (optional)</span>
+              <span className="mb-1 block text-muted">Custom order (optional)</span>
               <select
                 value={customOrderId}
                 onChange={(e) => setCustomOrderId(e.target.value)}
@@ -227,7 +227,7 @@ export function InvoiceForm({ type, basePath }) {
 
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-200 text-left text-slate-500">
+            <tr className="border-b border-slate-200 text-left text-muted">
               <th className="py-2 pr-4">Item</th>
               <th className="py-2 pr-4">Quantity</th>
               <th className="py-2 pr-4">Rate</th>
@@ -298,7 +298,7 @@ export function InvoiceForm({ type, basePath }) {
                   <td className="py-2 pr-4">{preview && !preview.error ? preview.lineTotal.toFixed(2) : preview?.error ?? '—'}</td>
                   <td className="py-2 pr-4">
                     {lines.length > 1 && (
-                      <button type="button" onClick={() => removeLine(i)} className="text-sm text-red-600 hover:underline">
+                      <button type="button" onClick={() => removeLine(i)} className="text-sm text-clay hover:underline">
                         Remove
                       </button>
                     )}
@@ -317,19 +317,19 @@ export function InvoiceForm({ type, basePath }) {
           <table className="text-sm">
             <tbody>
               <tr>
-                <td className="py-1 pr-4 text-slate-500">Subtotal</td>
+                <td className="py-1 pr-4 text-muted">Subtotal</td>
                 <td className="py-1 text-right">{totals.subtotal.toFixed(2)}</td>
               </tr>
               <tr>
-                <td className="py-1 pr-4 text-slate-500">CGST</td>
+                <td className="py-1 pr-4 text-muted">CGST</td>
                 <td className="py-1 text-right">{totals.cgst.toFixed(2)}</td>
               </tr>
               <tr>
-                <td className="py-1 pr-4 text-slate-500">SGST</td>
+                <td className="py-1 pr-4 text-muted">SGST</td>
                 <td className="py-1 text-right">{totals.sgst.toFixed(2)}</td>
               </tr>
               <tr>
-                <td className="py-1 pr-4 text-slate-500">IGST</td>
+                <td className="py-1 pr-4 text-muted">IGST</td>
                 <td className="py-1 text-right">{totals.igst.toFixed(2)}</td>
               </tr>
               <tr className="font-semibold">
@@ -340,12 +340,12 @@ export function InvoiceForm({ type, basePath }) {
           </table>
         </div>
 
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p className="text-sm text-clay">{error}</p>}
 
         <button
           type="submit"
           disabled={submitting}
-          className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+          className="rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
         >
           {submitting ? 'Posting…' : 'Post Invoice'}
         </button>

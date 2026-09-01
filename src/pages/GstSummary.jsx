@@ -40,13 +40,13 @@ export function GstSummary() {
 
   return (
     <div className="max-w-2xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">GST Summary (GSTR-3B style)</h1>
-      <p className="mb-2 text-sm text-slate-500">
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">GST Summary (GSTR-3B style)</h1>
+      <p className="mb-2 text-sm text-muted">
         Outward taxable supplies and inward supplies eligible for input tax credit, for manual filing — not a filed
         return. Supplies are counted in the period they were invoiced, not affected by a later cancellation — that
         instead shows up as its own "less: credit/debit notes" line, dated when the note was actually issued.
       </p>
-      <p className="mb-6 text-sm text-amber-700">
+      <p className="mb-6 text-sm text-gold">
         This deliberately stops short of a final "net tax payable" figure. Offsetting input tax credit against
         output liability (e.g. IGST credit must apply to IGST liability before CGST/SGST) follows government rules
         that can change — have your CA apply that set-off to the raw figures below before filing.
@@ -54,11 +54,11 @@ export function GstSummary() {
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <label className="text-sm">
-          <span className="mb-1 block text-slate-600">From</span>
+          <span className="mb-1 block text-muted">From</span>
           <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="rounded border border-slate-300 px-3 py-2" />
         </label>
         <label className="text-sm">
-          <span className="mb-1 block text-slate-600">To</span>
+          <span className="mb-1 block text-muted">To</span>
           <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="rounded border border-slate-300 px-3 py-2" />
         </label>
         <button
@@ -99,14 +99,14 @@ export function GstSummary() {
         </button>
       </div>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       {loading ? (
-        <p className="text-slate-500">Loading…</p>
+        <p className="text-muted">Loading…</p>
       ) : (
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-200 text-left text-slate-500">
+            <tr className="border-b border-slate-200 text-left text-muted">
               <th className="py-2 pr-4"></th>
               <th className="py-2 pr-4">Taxable value</th>
               <th className="py-2 pr-4">CGST</th>

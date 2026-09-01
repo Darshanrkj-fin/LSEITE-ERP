@@ -92,10 +92,10 @@ export function Layout() {
 
   return (
     <div className="flex h-screen">
-      <aside className="w-56 shrink-0 border-r border-slate-200 bg-slate-50 p-4">
+      <aside className="w-56 shrink-0 overflow-y-auto bg-ink p-4">
         <div className="mb-6 flex items-center gap-2">
           <img src="/lseite-logo.jpg" alt="Lseite" className="h-8 w-8 rounded-full object-cover" />
-          <span className="text-lg font-semibold text-slate-800">LSEITE ERP</span>
+          <span className="font-display text-lg font-semibold text-white">LSEITE ERP</span>
         </div>
         <nav className="space-y-1">
           {visibleNavItems.map((item) => (
@@ -106,8 +106,8 @@ export function Layout() {
               className={({ isActive }) =>
                 `block rounded px-3 py-2 text-sm ${
                   isActive
-                    ? 'bg-slate-800 text-white'
-                    : 'text-slate-600 hover:bg-slate-200'
+                    ? 'border-l-2 border-teal bg-white/10 text-white'
+                    : 'text-white/70 hover:bg-white/10'
                 }`
               }
             >
@@ -117,8 +117,8 @@ export function Layout() {
         </nav>
       </aside>
       <div className="flex flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-slate-200 px-6 py-3">
-          <span className="text-sm text-slate-500">
+        <header className="flex items-center justify-between border-b border-line px-6 py-3">
+          <span className="text-sm text-muted">
             Signed in as {username ?? '…'} ({profile?.role ?? '…'})
           </span>
           <div className="flex items-center gap-2">

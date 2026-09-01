@@ -34,16 +34,16 @@ export function Login() {
   }
 
   return (
-    <div className="flex h-screen items-center justify-center bg-slate-50">
+    <div className="flex h-screen items-center justify-center bg-paper">
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-sm rounded-lg border border-slate-200 bg-white p-6 shadow-sm"
+        className="w-full max-w-sm rounded-lg border border-line bg-mist p-6"
       >
         <img src="/lseite-logo.jpg" alt="Lseite" className="mx-auto mb-4 h-16 w-16 rounded-full object-cover" />
-        <h1 className="mb-4 text-center text-lg font-semibold text-slate-800">Sign in</h1>
+        <h1 className="font-display mb-4 text-center text-lg font-semibold text-ink">Sign in</h1>
 
         <label className="mb-3 block text-sm">
-          <span className="mb-1 block text-slate-600">Username</span>
+          <span className="mb-1 block text-muted">Username</span>
           <input
             type="text"
             autoComplete="username"
@@ -55,7 +55,7 @@ export function Login() {
         </label>
 
         <label className="mb-4 block text-sm">
-          <span className="mb-1 block text-slate-600">Password</span>
+          <span className="mb-1 block text-muted">Password</span>
           <input
             type="password"
             autoComplete="current-password"
@@ -67,12 +67,12 @@ export function Login() {
           />
         </label>
 
-        {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
+        {error && <p className="mb-3 text-sm text-clay">{error}</p>}
 
         <button
           type="submit"
           disabled={submitting}
-          className="w-full rounded bg-slate-800 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+          className="w-full rounded bg-ink py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
         >
           {submitting ? 'Please wait…' : 'Sign in'}
         </button>

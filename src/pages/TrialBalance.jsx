@@ -46,12 +46,12 @@ export function TrialBalance() {
 
   return (
     <div className="max-w-2xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Trial Balance</h1>
-      <p className="mb-6 text-sm text-slate-500">Total debit and credit posted to each account, as of a date.</p>
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Trial Balance</h1>
+      <p className="mb-6 text-sm text-muted">Total debit and credit posted to each account, as of a date.</p>
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <label className="text-sm">
-          <span className="mb-1 block text-slate-600">As of</span>
+          <span className="mb-1 block text-muted">As of</span>
           <input
             type="date"
             value={asOf}
@@ -67,13 +67,13 @@ export function TrialBalance() {
         </button>
       </div>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
       {loading ? (
-        <p className="text-slate-500">Loading…</p>
+        <p className="text-muted">Loading…</p>
       ) : (
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-200 text-left text-slate-500">
+            <tr className="border-b border-slate-200 text-left text-muted">
               <th className="py-2 pr-4">Account</th>
               <th className="py-2 pr-4">Type</th>
               <th className="py-2 pr-4">Debit</th>
@@ -103,7 +103,7 @@ export function TrialBalance() {
       )}
 
       {!loading && (
-        <p className={`mt-4 text-sm ${balanced ? 'text-green-600' : 'text-red-600'}`}>
+        <p className={`mt-4 text-sm ${balanced ? 'text-green-600' : 'text-clay'}`}>
           {balanced ? '✓ Balanced' : '✗ Not balanced — this should never happen, please report it.'}
         </p>
       )}

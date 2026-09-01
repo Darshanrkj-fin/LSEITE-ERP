@@ -55,12 +55,12 @@ export function ChangePassword() {
 
   return (
     <div className="max-w-sm">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Change Password</h1>
-      <p className="mb-6 text-sm text-slate-500">Update the password for your own account.</p>
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Change Password</h1>
+      <p className="mb-6 text-sm text-muted">Update the password for your own account.</p>
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <label className="block text-sm">
-          <span className="mb-1 block text-slate-600">Current password</span>
+          <span className="mb-1 block text-muted">Current password</span>
           <input
             type="password"
             autoComplete="current-password"
@@ -72,7 +72,7 @@ export function ChangePassword() {
         </label>
 
         <label className="block text-sm">
-          <span className="mb-1 block text-slate-600">New password</span>
+          <span className="mb-1 block text-muted">New password</span>
           <input
             type="password"
             autoComplete="new-password"
@@ -85,7 +85,7 @@ export function ChangePassword() {
         </label>
 
         <label className="block text-sm">
-          <span className="mb-1 block text-slate-600">Confirm new password</span>
+          <span className="mb-1 block text-muted">Confirm new password</span>
           <input
             type="password"
             autoComplete="new-password"
@@ -97,13 +97,13 @@ export function ChangePassword() {
           />
         </label>
 
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p className="text-sm text-clay">{error}</p>}
         {info && <p className="text-sm text-green-600">{info}</p>}
 
         <button
           type="submit"
           disabled={saving}
-          className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+          className="rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
         >
           {saving ? 'Saving…' : 'Change password'}
         </button>

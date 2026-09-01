@@ -158,24 +158,24 @@ export function InvoiceDetail({ type, basePath }) {
     }
   }
 
-  if (loading) return <p className="text-slate-500">Loading…</p>
-  if (error && !invoice) return <p className="text-sm text-red-600">{error}</p>
+  if (loading) return <p className="text-muted">Loading…</p>
+  if (error && !invoice) return <p className="text-sm text-clay">{error}</p>
 
   return (
     <div className="max-w-3xl">
-      <Link to={basePath} className="mb-4 inline-block text-sm text-slate-500 hover:underline">
+      <Link to={basePath} className="mb-4 inline-block text-sm text-muted hover:underline">
         ← Back
       </Link>
 
       <div className="mb-6 flex items-start justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-slate-800">{invoice.invoice_number}</h1>
-          <p className="text-sm text-slate-500">
+          <h1 className="text-xl font-semibold font-display text-ink">{invoice.invoice_number}</h1>
+          <p className="text-sm text-muted">
             {labels.party}: {invoice.parties?.name} · {invoice.invoice_date} ·{' '}
             <span className="capitalize">{invoice.status}</span>
           </p>
           {creditNote && (
-            <p className="text-sm text-red-700">
+            <p className="text-sm text-clay">
               Credited via {creditNote.note_number} on {creditNote.note_date}
             </p>
           )}
@@ -201,7 +201,7 @@ export function InvoiceDetail({ type, basePath }) {
             <button
               onClick={handleCancel}
               disabled={cancelling}
-              className="rounded border border-red-300 px-3 py-1 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50"
+              className="rounded border border-red-300 px-3 py-1 text-sm text-clay hover:bg-red-50 disabled:opacity-50"
             >
               {cancelling ? 'Working…' : labels.noteAction}
             </button>
@@ -212,7 +212,7 @@ export function InvoiceDetail({ type, basePath }) {
       {showEmailForm && (
         <div className="mb-4 flex flex-wrap items-end gap-3 rounded border border-slate-200 p-3">
           <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Send PDF to</span>
+            <span className="mb-1 block text-muted">Send PDF to</span>
             <input
               type="email"
               value={emailTo}
@@ -224,7 +224,7 @@ export function InvoiceDetail({ type, basePath }) {
           <button
             onClick={handleEmailPdf}
             disabled={emailing || !emailTo}
-            className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+            className="rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
             {emailing ? 'Sending…' : 'Send'}
           </button>
@@ -232,11 +232,11 @@ export function InvoiceDetail({ type, basePath }) {
         </div>
       )}
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       <table className="mb-6 w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-slate-500">
+          <tr className="border-b border-slate-200 text-left text-muted">
             <th className="py-2 pr-4">Item</th>
             <th className="py-2 pr-4">HSN/SAC</th>
             <th className="py-2 pr-4">Qty</th>
@@ -269,19 +269,19 @@ export function InvoiceDetail({ type, basePath }) {
         <table className="text-sm">
           <tbody>
             <tr>
-              <td className="py-1 pr-4 text-slate-500">Subtotal</td>
+              <td className="py-1 pr-4 text-muted">Subtotal</td>
               <td className="py-1 text-right">{invoice.subtotal}</td>
             </tr>
             <tr>
-              <td className="py-1 pr-4 text-slate-500">CGST</td>
+              <td className="py-1 pr-4 text-muted">CGST</td>
               <td className="py-1 text-right">{invoice.cgst_total}</td>
             </tr>
             <tr>
-              <td className="py-1 pr-4 text-slate-500">SGST</td>
+              <td className="py-1 pr-4 text-muted">SGST</td>
               <td className="py-1 text-right">{invoice.sgst_total}</td>
             </tr>
             <tr>
-              <td className="py-1 pr-4 text-slate-500">IGST</td>
+              <td className="py-1 pr-4 text-muted">IGST</td>
               <td className="py-1 text-right">{invoice.igst_total}</td>
             </tr>
             <tr className="font-semibold">
@@ -301,7 +301,7 @@ export function InvoiceDetail({ type, basePath }) {
           <button
             onClick={handleApplyAdvance}
             disabled={applyingAdvance}
-            className="rounded bg-slate-800 px-3 py-1 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+            className="rounded bg-ink px-3 py-1 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
             {applyingAdvance ? 'Applying…' : 'Apply Advance'}
           </button>

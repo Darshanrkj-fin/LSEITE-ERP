@@ -35,18 +35,18 @@ export function ItemProfitability() {
 
   return (
     <div className="max-w-3xl">
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">Item Profitability</h1>
-      <p className="mb-6 text-sm text-slate-500">
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">Item Profitability</h1>
+      <p className="mb-6 text-sm text-muted">
         Revenue vs. cost of goods sold per finished-good item, for sales invoices posted within a period.
       </p>
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <label className="text-sm">
-          <span className="mb-1 block text-slate-600">From</span>
+          <span className="mb-1 block text-muted">From</span>
           <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="rounded border border-slate-300 px-3 py-2" />
         </label>
         <label className="text-sm">
-          <span className="mb-1 block text-slate-600">To</span>
+          <span className="mb-1 block text-muted">To</span>
           <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="rounded border border-slate-300 px-3 py-2" />
         </label>
         <button
@@ -65,14 +65,14 @@ export function ItemProfitability() {
         </button>
       </div>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       {loading ? (
-        <p className="text-slate-500">Loading…</p>
+        <p className="text-muted">Loading…</p>
       ) : (
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-200 text-left text-slate-500">
+            <tr className="border-b border-slate-200 text-left text-muted">
               <th className="py-2 pr-4">Item</th>
               <th className="py-2 pr-4">Qty sold</th>
               <th className="py-2 pr-4">Revenue</th>
@@ -87,14 +87,14 @@ export function ItemProfitability() {
                 <td className="py-2 pr-4">{r.quantity_sold}</td>
                 <td className="py-2 pr-4">{Number(r.revenue).toFixed(2)}</td>
                 <td className="py-2 pr-4">{Number(r.cogs).toFixed(2)}</td>
-                <td className={`py-2 pr-4 font-medium ${r.profit >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                <td className={`py-2 pr-4 font-medium ${r.profit >= 0 ? 'text-green-700' : 'text-clay'}`}>
                   {Number(r.profit).toFixed(2)}
                 </td>
               </tr>
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={5} className="py-4 text-slate-400">
+                <td colSpan={5} className="py-4 text-muted">
                   No finished-good items yet.
                 </td>
               </tr>
@@ -105,7 +105,7 @@ export function ItemProfitability() {
               </td>
               <td className="py-2 pr-4">{totals.revenue.toFixed(2)}</td>
               <td className="py-2 pr-4">{totals.cogs.toFixed(2)}</td>
-              <td className={`py-2 pr-4 ${totals.profit >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+              <td className={`py-2 pr-4 ${totals.profit >= 0 ? 'text-green-700' : 'text-clay'}`}>
                 {totals.profit.toFixed(2)}
               </td>
             </tr>

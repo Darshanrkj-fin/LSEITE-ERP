@@ -75,25 +75,25 @@ export function CustomOrderDetail() {
     load()
   }
 
-  if (loading) return <p className="text-slate-500">Loading…</p>
-  if (error && !order) return <p className="text-sm text-red-600">{error}</p>
+  if (loading) return <p className="text-muted">Loading…</p>
+  if (error && !order) return <p className="text-sm text-clay">{error}</p>
 
   return (
     <div className="max-w-3xl">
-      <Link to="/custom-orders" className="mb-4 inline-block text-sm text-slate-500 hover:underline">
+      <Link to="/custom-orders" className="mb-4 inline-block text-sm text-muted hover:underline">
         ← Back
       </Link>
 
-      <h1 className="mb-1 text-xl font-semibold text-slate-800">{order.parties?.name}</h1>
-      <p className="mb-6 text-sm text-slate-500">
+      <h1 className="mb-1 text-xl font-semibold font-display text-ink">{order.parties?.name}</h1>
+      <p className="mb-6 text-sm text-muted">
         {order.description || 'No description'} · {order.order_date} · <span className="capitalize">{order.status}</span>
       </p>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
 
       <div className="mt-8">
         <div className="mb-2 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-slate-800">Advance Payments</h2>
+          <h2 className="text-lg font-semibold text-ink">Advance Payments</h2>
           {canEdit && (
             <button
               onClick={() => setShowForm((v) => !v)}
@@ -103,7 +103,7 @@ export function CustomOrderDetail() {
             </button>
           )}
         </div>
-        <p className="mb-4 text-sm text-slate-500">
+        <p className="mb-4 text-sm text-muted">
           Optional. An advance is a liability until applied to the final invoice for this order — it never affects
           revenue on its own.
         </p>
@@ -111,7 +111,7 @@ export function CustomOrderDetail() {
         {showForm && (
           <form onSubmit={handleRecordAdvance} className="mb-4 flex flex-wrap items-end gap-3 rounded border border-slate-200 p-3">
             <label className="text-sm">
-              <span className="mb-1 block text-slate-600">Bank/cash account</span>
+              <span className="mb-1 block text-muted">Bank/cash account</span>
               <select
                 required
                 value={bankAccountId}
@@ -127,7 +127,7 @@ export function CustomOrderDetail() {
               </select>
             </label>
             <label className="text-sm">
-              <span className="mb-1 block text-slate-600">Amount</span>
+              <span className="mb-1 block text-muted">Amount</span>
               <input
                 type="number"
                 required
@@ -139,7 +139,7 @@ export function CustomOrderDetail() {
               />
             </label>
             <label className="text-sm">
-              <span className="mb-1 block text-slate-600">Date</span>
+              <span className="mb-1 block text-muted">Date</span>
               <input
                 type="date"
                 required
@@ -151,7 +151,7 @@ export function CustomOrderDetail() {
             <button
               type="submit"
               disabled={submitting}
-              className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+              className="rounded bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
             >
               {submitting ? 'Recording…' : 'Record'}
             </button>
@@ -160,7 +160,7 @@ export function CustomOrderDetail() {
 
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-200 text-left text-slate-500">
+            <tr className="border-b border-slate-200 text-left text-muted">
               <th className="py-2 pr-4">Date</th>
               <th className="py-2 pr-4">Amount</th>
               <th className="py-2 pr-4">Status</th>
@@ -179,7 +179,7 @@ export function CustomOrderDetail() {
                       <button
                         onClick={() => handleRefund(a)}
                         disabled={refundingId === a.id}
-                        className="text-sm text-red-600 hover:underline"
+                        className="text-sm text-clay hover:underline"
                       >
                         {refundingId === a.id ? 'Refunding…' : 'Refund'}
                       </button>
@@ -190,7 +190,7 @@ export function CustomOrderDetail() {
             ))}
             {advances.length === 0 && (
               <tr>
-                <td colSpan={4} className="py-4 text-slate-400">
+                <td colSpan={4} className="py-4 text-muted">
                   No advances recorded yet.
                 </td>
               </tr>
