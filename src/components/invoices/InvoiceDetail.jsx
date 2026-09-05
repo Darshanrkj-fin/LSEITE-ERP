@@ -3,10 +3,11 @@ import { Link, useParams } from 'react-router-dom'
 import { supabase } from '../../lib/supabaseClient'
 import { useAuth } from '../../context/AuthContext'
 import { PaymentsSection } from './PaymentsSection'
+import { CreditDebitNoteForm } from './CreditDebitNoteForm'
 
 const LABELS = {
-  sales: { party: 'Customer', noteAction: 'Issue Credit Note', noteDoc: 'credit note' },
-  purchase: { party: 'Vendor', noteAction: 'Issue Debit Note', noteDoc: 'debit note' },
+  sales: { party: 'Customer', noteAction: 'Cancel Invoice', noteDoc: 'credit note', partialAction: 'Issue Partial Credit Note' },
+  purchase: { party: 'Vendor', noteAction: 'Cancel Invoice', noteDoc: 'debit note', partialAction: 'Issue Partial Debit Note' },
 }
 
 export function InvoiceDetail({ type, basePath }) {
@@ -17,7 +18,9 @@ export function InvoiceDetail({ type, basePath }) {
 
   const [invoice, setInvoice] = useState(null)
   const [lineItems, setLineItems] = useState([])
-  const [creditNote, setCreditNote] = useState(null)
+  const [creditNotes, setCreditNotes] = useState([])
+  const [creditNoteLines, setCreditNoteLines] = useState([])
+  const [showNoteForm, setShowNoteForm] = useState(false)
   const [applicableAdvance, setApplicableAdvance] = useState(null)
   const [applyingAdvance, setApplyingAdvance] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -31,14 +34,14 @@ export function InvoiceDetail({ type, basePath }) {
 
   const load = async () => {
     setLoading(true)
-    const [{ data: inv, error: invError }, { data: lines, error: lineError }, { data: note }] = await Promise.all([
+    const [{ data: inv, error: invError }, { data: lines, error: lineError }, { data: notes }] = await Promise.all([
       supabase.from('invoices').select('*, parties(name, email)').eq('id', id).single(),
       supabase
         .from('invoice_line_items')
         .select('*, items(name)')
         .eq('invoice_id', id)
         .order('created_at'),
-      supabase.from('credit_notes').select('*').eq('invoice_id', id).maybeSingle(),
+      supabase.from('credit_notes').select('*').eq('invoice_id', id).order('note_date'),
     ])
     if (invError) setError(invError.message)
     else {
@@ -47,7 +50,20 @@ export function InvoiceDetail({ type, basePath }) {
     }
     if (lineError) setError(lineError.message)
     else setLineItems(lines ?? [])
-    setCreditNote(note ?? null)
+    setCreditNotes(notes ?? [])
+
+    // Every credit_note_line_items row against THIS invoice's own lines —
+    // used to show/limit remaining quantity per line in the partial-note
+    // form (the RPC re-validates this authoritatively regardless).
+    if (lines?.length) {
+      const { data: noteLines } = await supabase
+        .from('credit_note_line_items')
+        .select('invoice_line_item_id, quantity')
+        .in('invoice_line_item_id', lines.map((l) => l.id))
+      setCreditNoteLines(noteLines ?? [])
+    } else {
+      setCreditNoteLines([])
+    }
 
     // An unapplied advance on this invoice's custom order, if any — the
     // "selectable credit when raising the final invoice" from ROADMAP.md's
@@ -174,11 +190,12 @@ export function InvoiceDetail({ type, basePath }) {
             {labels.party}: {invoice.parties?.name} · {invoice.invoice_date} ·{' '}
             <span className="capitalize">{invoice.status}</span>
           </p>
-          {creditNote && (
-            <p className="text-sm text-clay">
-              Credited via {creditNote.note_number} on {creditNote.note_date}
+          {creditNotes.map((note) => (
+            <p key={note.id} className="text-sm text-clay">
+              {note.reason ? 'Adjusted' : 'Credited'} via {note.note_number} on {note.note_date}
+              {' '}({note.grand_total}){note.reason && <span className="text-muted"> — {note.reason}</span>}
             </p>
-          )}
+          ))}
         </div>
         <div className="flex gap-2">
           <button
@@ -199,6 +216,14 @@ export function InvoiceDetail({ type, basePath }) {
           </button>
           {canEdit && invoice.status === 'posted' && (
             <button
+              onClick={() => setShowNoteForm((v) => !v)}
+              className="rounded border border-slate-300 px-3 py-1 text-sm text-slate-600 hover:bg-slate-100"
+            >
+              {labels.partialAction}
+            </button>
+          )}
+          {canEdit && invoice.status === 'posted' && (
+            <button
               onClick={handleCancel}
               disabled={cancelling}
               className="rounded border border-red-300 px-3 py-1 text-sm text-clay hover:bg-red-50 disabled:opacity-50"
@@ -208,6 +233,19 @@ export function InvoiceDetail({ type, basePath }) {
           )}
         </div>
       </div>
+
+      {showNoteForm && (
+        <CreditDebitNoteForm
+          invoiceId={id}
+          lineItems={lineItems}
+          creditNoteLines={creditNoteLines}
+          onIssued={() => {
+            setShowNoteForm(false)
+            load()
+          }}
+          onCancel={() => setShowNoteForm(false)}
+        />
+      )}
 
       {showEmailForm && (
         <div className="mb-4 flex flex-wrap items-end gap-3 rounded border border-slate-200 p-3">

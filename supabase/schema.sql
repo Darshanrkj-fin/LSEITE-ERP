@@ -107,14 +107,15 @@ create table public.chart_of_accounts (
       'deductions_payable',
       'raw_material_inventory', 'finished_goods_inventory',
       'cost_of_goods_sold', 'rnd_expense',
-      'customer_advances'
+      'customer_advances',
+      'wastage_expense', 'platform_commission_expense'
     )
   ),
   constraint coa_system_role_type_consistency check (
     system_role is null
     or (system_role in ('accounts_receivable', 'input_cgst', 'input_sgst', 'input_igst', 'raw_material_inventory', 'finished_goods_inventory') and type = 'asset')
     or (system_role in ('accounts_payable', 'output_cgst', 'output_sgst', 'output_igst', 'deductions_payable', 'customer_advances') and type = 'liability')
-    or (system_role in ('cost_of_goods_sold', 'rnd_expense') and type = 'expense')
+    or (system_role in ('cost_of_goods_sold', 'rnd_expense', 'wastage_expense', 'platform_commission_expense') and type = 'expense')
   ),
   created_at timestamptz not null default now()
 );
@@ -348,7 +349,9 @@ begin
     (p_company_id, 'Finished Goods Inventory', 'asset', 'finished_goods_inventory'),
     (p_company_id, 'Cost of Goods Sold', 'expense', 'cost_of_goods_sold'),
     (p_company_id, 'R&D Expense', 'expense', 'rnd_expense'),
-    (p_company_id, 'Customer Advances', 'liability', 'customer_advances')
+    (p_company_id, 'Customer Advances', 'liability', 'customer_advances'),
+    (p_company_id, 'Wastage Expense', 'expense', 'wastage_expense'),
+    (p_company_id, 'Platform Commission Expense', 'expense', 'platform_commission_expense')
   on conflict (company_id, system_role) where system_role is not null do nothing;
 end;
 $$;
@@ -834,13 +837,14 @@ begin
   if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
     raise exception 'Not authorized to post invoices.';
   end if;
+  perform public.reject_if_period_closed(v_company_id, p_invoice_date);
 
   select state_code into v_seller_state_code from public.companies where id = v_company_id;
 
   v_expected_party_type := case when p_type = 'sales' then 'customer' else 'vendor' end;
   select state_code into v_buyer_state_code
     from public.parties
-    where id = p_party_id and company_id = v_company_id and type = v_expected_party_type;
+    where id = p_party_id and company_id = v_company_id and type in (v_expected_party_type, 'both');
   if v_buyer_state_code is null then
     raise exception 'Party not found, not in your company, or wrong type for a % invoice.', p_type;
   end if;
@@ -1126,6 +1130,7 @@ begin
   if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
     raise exception 'Not authorized to cancel invoices.';
   end if;
+  perform public.reject_if_period_closed(v_company_id, current_date);
 
   select * into v_invoice from public.invoices where id = p_invoice_id and company_id = v_company_id;
   if not found then
@@ -1705,6 +1710,7 @@ begin
   if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
     raise exception 'Not authorized to record payments.';
   end if;
+  perform public.reject_if_period_closed(v_company_id, p_payment_date);
 
   if p_mode not in ('cash', 'bank_transfer', 'cheque', 'upi', 'card', 'other') then
     raise exception 'Invalid payment mode: %', p_mode;
@@ -1783,6 +1789,7 @@ begin
   if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
     raise exception 'Not authorized to cancel payments.';
   end if;
+  perform public.reject_if_period_closed(v_company_id, current_date);
 
   select * into v_payment from public.payments where id = p_payment_id and company_id = v_company_id;
   if not found then
@@ -3174,6 +3181,7 @@ begin
   if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
     raise exception 'Not authorized to record advances.';
   end if;
+  perform public.reject_if_period_closed(v_company_id, p_advance_date);
 
   if p_amount <= 0 then
     raise exception 'Advance amount must be greater than zero.';
@@ -3189,7 +3197,7 @@ begin
   end if;
 
   if not exists (
-    select 1 from public.parties where id = p_party_id and company_id = v_company_id and type = 'customer'
+    select 1 from public.parties where id = p_party_id and company_id = v_company_id and type in ('customer', 'both')
   ) then
     raise exception 'Party not found, not in your company, or not a customer.';
   end if;
@@ -3247,6 +3255,7 @@ begin
   if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
     raise exception 'Not authorized to apply advances.';
   end if;
+  perform public.reject_if_period_closed(v_company_id, current_date);
 
   select * into v_advance from public.customer_advances where id = p_advance_id and company_id = v_company_id;
   if not found then
@@ -3321,6 +3330,7 @@ begin
   if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
     raise exception 'Not authorized to refund advances.';
   end if;
+  perform public.reject_if_period_closed(v_company_id, current_date);
 
   select * into v_advance from public.customer_advances where id = p_advance_id and company_id = v_company_id;
   if not found then
@@ -3372,3 +3382,1229 @@ left join (
 ) adv on adv.applied_invoice_id = i.id
 where i.status = 'posted'
 group by i.id, adv.applied_amount;
+
+-- ============================================================
+-- Phase 26 — Repository & Platform Hygiene
+-- No new tables. Supabase requires explicit Postgres grants for
+-- PostgREST/Data-API access on any table created on or after
+-- October 30, 2026 (existing tables, including everything above this
+-- point, keep their current implicit grants and are unaffected). From
+-- this point on, every `create table` in this file must be followed by:
+--
+--   grant select, insert, update, delete on public.<table> to authenticated;
+--   grant all on public.<table> to service_role;
+--
+-- (narrower per-role grants where a table is read-only for `authenticated`,
+-- matching whatever the table's own RLS policies already allow). RLS still
+-- does the actual authorization — these grants only make the table
+-- reachable through PostgREST at all.
+-- ============================================================
+
+-- ============================================================
+-- Phase 27 — Accounting Periods & Reporting Dimensions
+-- ============================================================
+
+-- No overlap-prevention constraint: not needed for correctness (the guard
+-- below blocks a date if ANY closed period contains it, whether or not
+-- periods are tidy/non-overlapping), and adding one would need the
+-- btree_gist extension for no real benefit at this business's scale.
+create table public.accounting_periods (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  period_start date not null,
+  period_end date not null check (period_end >= period_start),
+  status text not null default 'open' check (status in ('open', 'closed')),
+  created_at timestamptz not null default now(),
+  unique (company_id, period_start, period_end)
+);
+
+grant select, insert, update, delete on public.accounting_periods to authenticated;
+grant all on public.accounting_periods to service_role;
+
+alter table public.accounting_periods enable row level security;
+
+create policy accounting_periods_select on public.accounting_periods
+  for select using (company_id = public.current_user_company_id());
+-- Only admin can create/close/reopen a period — matches how this app
+-- already treats admin as the top authority (e.g. can_manage_users).
+create policy accounting_periods_write on public.accounting_periods
+  for insert with check (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() = 'admin'
+  );
+create policy accounting_periods_update on public.accounting_periods
+  for update using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() = 'admin'
+  );
+
+-- Shared guard called from every posting/reversal function below — blocks
+-- writing a journal-affecting transaction dated inside a closed accounting
+-- period. Not security definer itself: called only from within already-
+-- security-definer posting functions, so it inherits their elevated
+-- context at call time (same pattern already used by
+-- resolve_tax_rate()/calculate_gst_split()).
+create function public.reject_if_period_closed(p_company_id uuid, p_date date)
+returns void
+language plpgsql
+as $$
+begin
+  if exists (
+    select 1 from public.accounting_periods
+    where company_id = p_company_id
+      and status = 'closed'
+      and p_date between period_start and period_end
+  ) then
+    raise exception 'Cannot post: % falls in a closed accounting period.', p_date;
+  end if;
+end;
+$$;
+
+grant execute on function public.reject_if_period_closed(uuid, date) to authenticated;
+
+-- Cloud Kitchen / Consulting / R&D / Administration — plain text, not a
+-- new table, since the set of business units is small and stable for this
+-- business. Nullable: existing rows and every current posting path are
+-- unaffected until a business_unit is actually chosen somewhere.
+alter table public.invoices add column business_unit text;
+alter table public.journal_entries add column business_unit text;
+
+-- AR/AP aging. Buckets are by days since invoice_date, not a formal due
+-- date (invoices don't carry payment terms yet) — "Current" means the
+-- invoice itself is 0-30 days old, not "not yet due". Read-only, invoker
+-- rights (not security definer): runs under the caller's own RLS, exactly
+-- like trial_balance()/profit_and_loss() above.
+create function public.ar_ap_aging(p_type text, p_as_of date default current_date)
+returns table (
+  invoice_id uuid,
+  party_id uuid,
+  party_name text,
+  invoice_number text,
+  invoice_date date,
+  grand_total numeric,
+  balance_due numeric,
+  days_outstanding int,
+  bucket text
+)
+language sql
+stable
+as $$
+  select
+    ips.invoice_id, i.party_id, pt.name, ips.invoice_number, i.invoice_date,
+    ips.grand_total, ips.balance_due,
+    (p_as_of - i.invoice_date)::int as days_outstanding,
+    case
+      when (p_as_of - i.invoice_date) <= 30 then 'Current (0-30)'
+      when (p_as_of - i.invoice_date) <= 60 then '31-60'
+      when (p_as_of - i.invoice_date) <= 90 then '61-90'
+      else '90+'
+    end as bucket
+  from public.invoice_payment_status ips
+  join public.invoices i on i.id = ips.invoice_id
+  join public.parties pt on pt.id = i.party_id
+  where ips.type = p_type and ips.balance_due > 0.005
+  order by i.invoice_date;
+$$;
+
+grant execute on function public.ar_ap_aging(text, date) to authenticated;
+
+-- Per-party statement: a chronological list of invoice/payment events for
+-- one party, reusing existing data — not a new sub-ledger. Running balance
+-- is left for the client to sum in order (one plain SELECT, ponytail
+-- minimalism — no need for a window-function balance column server-side).
+create function public.party_statement(p_party_id uuid, p_from date, p_to date)
+returns table (
+  event_date date,
+  event_type text,
+  reference_number text,
+  debit numeric,
+  credit numeric
+)
+language sql
+stable
+as $$
+  select i.invoice_date, 'invoice', i.invoice_number,
+    case when i.type = 'sales' then i.grand_total else 0 end,
+    case when i.type = 'purchase' then i.grand_total else 0 end
+  from public.invoices i
+  where i.party_id = p_party_id and i.status = 'posted' and i.invoice_date between p_from and p_to
+  union all
+  select p.payment_date, 'payment', coalesce(p.bank_ref, ''),
+    case when i.type = 'purchase' then p.amount else 0 end,
+    case when i.type = 'sales' then p.amount else 0 end
+  from public.payments p
+  join public.invoices i on i.id = p.invoice_id
+  where i.party_id = p_party_id and p.status = 'posted' and p.payment_date between p_from and p_to
+  order by 1;
+$$;
+
+grant execute on function public.party_statement(uuid, date, date) to authenticated;
+
+-- ============================================================
+-- Phase 28 — Master Data: Units, Warehouses, Flexible Party Roles
+-- ============================================================
+
+create table public.units (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  name text not null,
+  created_at timestamptz not null default now(),
+  unique (company_id, name)
+);
+
+grant select, insert, update, delete on public.units to authenticated;
+grant all on public.units to service_role;
+
+alter table public.units enable row level security;
+
+create policy units_select on public.units
+  for select using (company_id = public.current_user_company_id());
+create policy units_write on public.units
+  for insert with check (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy units_update on public.units
+  for update using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy units_delete on public.units
+  for delete using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+
+-- 1 from_unit = factor * to_unit (e.g. 1 kg = 1000 * 1 g).
+create table public.unit_conversions (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  from_unit_id uuid not null references public.units (id),
+  to_unit_id uuid not null references public.units (id),
+  factor numeric(14, 6) not null check (factor > 0),
+  created_at timestamptz not null default now(),
+  unique (from_unit_id, to_unit_id)
+);
+
+grant select, insert, update, delete on public.unit_conversions to authenticated;
+grant all on public.unit_conversions to service_role;
+
+alter table public.unit_conversions enable row level security;
+
+create policy unit_conversions_select on public.unit_conversions
+  for select using (company_id = public.current_user_company_id());
+create policy unit_conversions_write on public.unit_conversions
+  for insert with check (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy unit_conversions_update on public.unit_conversions
+  for update using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy unit_conversions_delete on public.unit_conversions
+  for delete using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+
+-- items keeps its existing `unit` text column as-is; unit_id is additive,
+-- not a replacement — nothing existing breaks, and no current screen
+-- reads or writes it yet.
+alter table public.items add column unit_id uuid references public.units (id);
+
+create table public.warehouses (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  branch_id uuid not null references public.branches (id),
+  name text not null,
+  is_default boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+-- At most one default warehouse per branch (same pattern as
+-- branches_one_default_per_company above).
+create unique index warehouses_one_default_per_branch
+  on public.warehouses (branch_id)
+  where is_default;
+
+grant select, insert, update, delete on public.warehouses to authenticated;
+grant all on public.warehouses to service_role;
+
+alter table public.warehouses enable row level security;
+
+create policy warehouses_select on public.warehouses
+  for select using (company_id = public.current_user_company_id());
+create policy warehouses_write on public.warehouses
+  for insert with check (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy warehouses_update on public.warehouses
+  for update using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+
+-- Backfill: give every existing branch its own default warehouse, same
+-- reasoning as Phase 20's branch backfill. Safe to run more than once
+-- (skips a branch that already has one).
+do $$
+declare
+  b record;
+begin
+  for b in select id, company_id, name from public.branches loop
+    if not exists (select 1 from public.warehouses where branch_id = b.id and is_default) then
+      insert into public.warehouses (company_id, branch_id, name, is_default)
+      values (b.company_id, b.id, b.name || ' - Main Warehouse', true);
+    end if;
+  end loop;
+end $$;
+
+-- Nullable, additive — no existing insert into stock_ledger/item_batches
+-- names these columns, so every current posting path is unaffected.
+alter table public.stock_ledger add column warehouse_id uuid references public.warehouses (id);
+alter table public.item_batches add column warehouse_id uuid references public.warehouses (id);
+
+-- parties.type widened to allow 'both' — a party can be billed as a
+-- customer and paid as a vendor without a full party-role-table rewrite.
+-- post_invoice() and post_customer_advance() above are updated (in place)
+-- to treat 'both' as satisfying either role check, so this is actually
+-- usable, not just a decorative value.
+alter table public.parties drop constraint parties_type_check;
+alter table public.parties add constraint parties_type_check check (type in ('customer', 'vendor', 'both'));
+
+-- ============================================================
+-- Phase 29 — Sales Enhancements: Manual Credit/Debit Notes & AR Statements
+-- ============================================================
+
+-- credit_notes previously allowed at most one per invoice (the
+-- cancel_invoice()-only full reversal). A manual partial note needs
+-- multiple notes against the same invoice over time, so the uniqueness
+-- goes away — replaced with a plain index for the same lookup performance.
+alter table public.credit_notes drop constraint credit_notes_invoice_id_key;
+create index credit_notes_invoice_id_idx on public.credit_notes (invoice_id);
+
+alter table public.credit_notes add column reason text;
+
+-- Same invariant post_invoice()'s own header already enforces: the header
+-- must be a SUM of the (already-rounded) line amounts, never recomputed
+-- independently. cancel_invoice()'s existing insert already satisfies this
+-- (it copies the invoice's own already-consistent totals wholesale); the
+-- new post_manual_credit_debit_note() below computes it the same way.
+alter table public.credit_notes add constraint credit_notes_totals_consistent
+  check (grand_total = subtotal + cgst_total + sgst_total + igst_total);
+
+-- One row per invoice_line_item a manual note touches. Quantity-based
+-- partial adjustments only (a returned quantity of a line) — a flat
+-- price-only adjustment with no quantity change is a real, separate need
+-- flagged in ROADMAP.md rather than built speculatively here.
+create table public.credit_note_line_items (
+  id uuid primary key default gen_random_uuid(),
+  credit_note_id uuid not null references public.credit_notes (id),
+  invoice_line_item_id uuid not null references public.invoice_line_items (id),
+  quantity numeric(14, 2) not null check (quantity > 0),
+  taxable_value numeric(14, 2) not null,
+  tax_rate numeric(5, 2) not null check (tax_rate >= 0),
+  cgst_amount numeric(14, 2) not null default 0,
+  sgst_amount numeric(14, 2) not null default 0,
+  igst_amount numeric(14, 2) not null default 0,
+  line_total numeric(14, 2) not null,
+  created_at timestamptz not null default now()
+);
+
+grant select, insert, update, delete on public.credit_note_line_items to authenticated;
+grant all on public.credit_note_line_items to service_role;
+
+alter table public.credit_note_line_items enable row level security;
+
+-- No company_id column here either, same reasoning as invoice_line_items
+-- above — scoped by joining through credit_notes. No insert/update/delete
+-- policy: all writes happen through post_manual_credit_debit_note().
+create policy credit_note_line_items_select on public.credit_note_line_items
+  for select using (
+    exists (
+      select 1 from public.credit_notes
+      where credit_notes.id = credit_note_line_items.credit_note_id
+        and credit_notes.company_id = public.current_user_company_id()
+    )
+  );
+
+-- Issues a manual, partial credit/debit note against specific invoice
+-- lines — for a partial return or price correction, distinct from
+-- cancel_invoice()'s full reversal (which stays the only path that also
+-- unwinds inventory/average_cost, and only ever for 100% of the invoice).
+--
+-- Each line's tax amounts are computed by PROPORTIONALLY SCALING that
+-- line's own already-posted taxable_value/cgst/sgst/igst by
+-- (adjusted quantity / original quantity) — never by re-resolving today's
+-- tax rate or recomputing the same/different-state split from scratch.
+-- This is deliberate: CLAUDE.md section 3 requires a posted invoice's
+-- historical tax amounts never silently change if a rate is later
+-- updated, and scaling the ORIGINAL line's own recorded amounts is the
+-- only way to guarantee the note always agrees with what that invoice
+-- actually posted, regardless of what tax_rates says today.
+--
+-- Known, deliberate limitation: this does not reverse stock_ledger
+-- quantities, items.average_cost, or the Phase 10 COGS/finished-goods-
+-- inventory posting for the returned quantity. A partial return of
+-- physical goods still needs a separate manual stock adjustment for now —
+-- flagged in ROADMAP.md rather than built speculatively, since correctly
+-- unwinding weighted-average costing for a PARTIAL quantity (with
+-- possibly other purchases/consumption having happened since) is a
+-- meaningfully bigger, riskier problem than the financial correction here.
+create or replace function public.post_manual_credit_debit_note(
+  p_invoice_id uuid,
+  p_reason text,
+  p_line_adjustments jsonb -- [{invoice_line_item_id, quantity}, ...]
+)
+returns public.credit_notes
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_invoice public.invoices;
+  v_fy text;
+  v_note_type text;
+  v_note_prefix text;
+  v_seq int;
+  v_note_number text;
+  v_entry_group uuid := gen_random_uuid();
+  v_note public.credit_notes;
+  v_adj jsonb;
+  v_adj_qty numeric(14, 2);
+  v_line public.invoice_line_items;
+  v_already_credited numeric(14, 2);
+  v_remaining numeric(14, 2);
+  v_factor numeric(14, 6);
+  v_line_taxable numeric(14, 2);
+  v_line_cgst numeric(14, 2);
+  v_line_sgst numeric(14, 2);
+  v_line_igst numeric(14, 2);
+  v_line_total numeric(14, 2);
+  v_subtotal numeric(14, 2) := 0;
+  v_cgst numeric(14, 2) := 0;
+  v_sgst numeric(14, 2) := 0;
+  v_igst numeric(14, 2) := 0;
+  v_grand numeric(14, 2);
+  v_ar_ap_account_id uuid;
+  v_cgst_account_id uuid;
+  v_sgst_account_id uuid;
+  v_igst_account_id uuid;
+  -- Purchase-side routing must mirror post_invoice()'s own split exactly
+  -- (Phase 10): a raw-material line's taxable value reverses out of
+  -- raw_material_inventory, everything else reverses out of the invoice's
+  -- own picked revenue_expense_account_id. Sales has no such split — all
+  -- revenue posts to one picked account regardless of item type.
+  v_item_type text;
+  v_subtotal_rm numeric(14, 2) := 0;
+  v_subtotal_other numeric(14, 2) := 0;
+  v_rm_inventory_account_id uuid;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to issue credit/debit notes.';
+  end if;
+  perform public.reject_if_period_closed(v_company_id, current_date);
+
+  select * into v_invoice from public.invoices where id = p_invoice_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Invoice not found in your company.';
+  end if;
+  if v_invoice.status <> 'posted' then
+    raise exception 'Can only issue a credit/debit note against a posted invoice (current status: %).', v_invoice.status;
+  end if;
+
+  if jsonb_array_length(p_line_adjustments) = 0 then
+    raise exception 'A credit/debit note needs at least one line adjustment.';
+  end if;
+
+  select id into v_ar_ap_account_id from public.chart_of_accounts
+    where company_id = v_company_id
+      and system_role = case when v_invoice.type = 'sales' then 'accounts_receivable' else 'accounts_payable' end;
+  select id into v_cgst_account_id from public.chart_of_accounts
+    where company_id = v_company_id
+      and system_role = case when v_invoice.type = 'sales' then 'output_cgst' else 'input_cgst' end;
+  select id into v_sgst_account_id from public.chart_of_accounts
+    where company_id = v_company_id
+      and system_role = case when v_invoice.type = 'sales' then 'output_sgst' else 'input_sgst' end;
+  select id into v_igst_account_id from public.chart_of_accounts
+    where company_id = v_company_id
+      and system_role = case when v_invoice.type = 'sales' then 'output_igst' else 'input_igst' end;
+  select id into v_rm_inventory_account_id from public.chart_of_accounts
+    where company_id = v_company_id and system_role = 'raw_material_inventory';
+  if v_ar_ap_account_id is null or v_cgst_account_id is null or v_sgst_account_id is null or v_igst_account_id is null
+     or v_rm_inventory_account_id is null then
+    raise exception 'Missing system ledger account(s) for this company.';
+  end if;
+
+  v_fy := public.financial_year_for(current_date);
+  v_note_type := case when v_invoice.type = 'sales' then 'sales_credit_note' else 'purchase_debit_note' end;
+  v_note_prefix := case when v_invoice.type = 'sales' then 'CN' else 'DN' end;
+
+  insert into public.invoice_number_counters (company_id, invoice_type, financial_year, next_number)
+  values (v_company_id, v_note_type, v_fy, 2)
+  on conflict (company_id, invoice_type, financial_year)
+    do update set next_number = invoice_number_counters.next_number + 1
+  returning next_number - 1 into v_seq;
+
+  v_note_number := v_note_prefix || '/' || v_fy || '/' || lpad(v_seq::text, 5, '0');
+
+  insert into public.credit_notes (
+    company_id, invoice_id, type, note_number, note_date, reason,
+    subtotal, cgst_total, sgst_total, igst_total, grand_total, entry_group_id
+  ) values (
+    v_company_id, v_invoice.id, v_invoice.type, v_note_number, current_date, p_reason,
+    0, 0, 0, 0, 0, v_entry_group
+  ) returning * into v_note;
+
+  for v_adj in select * from jsonb_array_elements(p_line_adjustments)
+  loop
+    select * into v_line
+      from public.invoice_line_items
+      where id = (v_adj->>'invoice_line_item_id')::uuid and invoice_id = p_invoice_id;
+    if not found then
+      raise exception 'Line item % does not belong to this invoice.', v_adj->>'invoice_line_item_id';
+    end if;
+
+    v_adj_qty := (v_adj->>'quantity')::numeric;
+    if v_adj_qty <= 0 then
+      raise exception 'Adjustment quantity must be greater than zero.';
+    end if;
+
+    select coalesce(sum(quantity), 0) into v_already_credited
+      from public.credit_note_line_items where invoice_line_item_id = v_line.id;
+    v_remaining := v_line.quantity - v_already_credited;
+    if v_adj_qty > v_remaining then
+      raise exception 'Cannot adjust % units of line %: only % remain (invoice quantity %, already adjusted %).',
+        v_adj_qty, v_line.id, v_remaining, v_line.quantity, v_already_credited;
+    end if;
+
+    v_factor := v_adj_qty / v_line.quantity;
+    v_line_taxable := round(v_line.taxable_value * v_factor, 2);
+    v_line_cgst := round(v_line.cgst_amount * v_factor, 2);
+    v_line_sgst := round(v_line.sgst_amount * v_factor, 2);
+    v_line_igst := round(v_line.igst_amount * v_factor, 2);
+    v_line_total := v_line_taxable + v_line_cgst + v_line_sgst + v_line_igst;
+
+    insert into public.credit_note_line_items (
+      credit_note_id, invoice_line_item_id, quantity, taxable_value, tax_rate,
+      cgst_amount, sgst_amount, igst_amount, line_total
+    ) values (
+      v_note.id, v_line.id, v_adj_qty, v_line_taxable, v_line.tax_rate,
+      v_line_cgst, v_line_sgst, v_line_igst, v_line_total
+    );
+
+    if v_invoice.type = 'purchase' then
+      select item_type into v_item_type from public.items where id = v_line.item_id;
+      if v_item_type = 'raw_material' then
+        v_subtotal_rm := v_subtotal_rm + v_line_taxable;
+      else
+        v_subtotal_other := v_subtotal_other + v_line_taxable;
+      end if;
+    end if;
+
+    v_subtotal := v_subtotal + v_line_taxable;
+    v_cgst := v_cgst + v_line_cgst;
+    v_sgst := v_sgst + v_line_sgst;
+    v_igst := v_igst + v_line_igst;
+  end loop;
+
+  v_grand := v_subtotal + v_cgst + v_sgst + v_igst;
+
+  update public.credit_notes
+    set subtotal = v_subtotal, cgst_total = v_cgst, sgst_total = v_sgst, igst_total = v_igst, grand_total = v_grand
+    where id = v_note.id
+    returning * into v_note;
+
+  -- Mirror image of post_invoice()'s own entries, at the note's (smaller)
+  -- amounts — a sales credit note reduces revenue/output-tax and AR; a
+  -- purchase debit note reduces AP and reverses the same account the
+  -- original purchase used (raw_material_inventory for a raw-material
+  -- line, otherwise the invoice's own picked revenue_expense_account_id —
+  -- exactly the same routing post_invoice() itself used).
+  if v_invoice.type = 'sales' then
+    insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+      values (v_company_id, v_entry_group, current_date, v_invoice.revenue_expense_account_id, v_subtotal, 0, 'credit_note', v_note.id);
+    if v_cgst > 0 then
+      insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+        values (v_company_id, v_entry_group, current_date, v_cgst_account_id, v_cgst, 0, 'credit_note', v_note.id);
+    end if;
+    if v_sgst > 0 then
+      insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+        values (v_company_id, v_entry_group, current_date, v_sgst_account_id, v_sgst, 0, 'credit_note', v_note.id);
+    end if;
+    if v_igst > 0 then
+      insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+        values (v_company_id, v_entry_group, current_date, v_igst_account_id, v_igst, 0, 'credit_note', v_note.id);
+    end if;
+    insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+      values (v_company_id, v_entry_group, current_date, v_ar_ap_account_id, 0, v_grand, 'credit_note', v_note.id);
+  else
+    insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+      values (v_company_id, v_entry_group, current_date, v_ar_ap_account_id, v_grand, 0, 'credit_note', v_note.id);
+    if v_subtotal_rm > 0 then
+      insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+        values (v_company_id, v_entry_group, current_date, v_rm_inventory_account_id, 0, v_subtotal_rm, 'credit_note', v_note.id);
+    end if;
+    if v_subtotal_other > 0 then
+      insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+        values (v_company_id, v_entry_group, current_date, v_invoice.revenue_expense_account_id, 0, v_subtotal_other, 'credit_note', v_note.id);
+    end if;
+    if v_cgst > 0 then
+      insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+        values (v_company_id, v_entry_group, current_date, v_cgst_account_id, 0, v_cgst, 'credit_note', v_note.id);
+    end if;
+    if v_sgst > 0 then
+      insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+        values (v_company_id, v_entry_group, current_date, v_sgst_account_id, 0, v_sgst, 'credit_note', v_note.id);
+    end if;
+    if v_igst > 0 then
+      insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+        values (v_company_id, v_entry_group, current_date, v_igst_account_id, 0, v_igst, 'credit_note', v_note.id);
+    end if;
+  end if;
+
+  return v_note;
+end;
+$$;
+
+grant execute on function public.post_manual_credit_debit_note(uuid, text, jsonb) to authenticated;
+
+-- Redefines invoice_payment_status again (see the two comments above this
+-- one) to also fold in credit/debit notes. A manual partial note leaves
+-- the invoice status='posted' (unlike a full cancel_invoice(), which
+-- flips status to 'cancelled' and drops out of this view's own filter
+-- entirely) — so without this, a partially-credited invoice would still
+-- show its full original balance due, silently overstating AR aging
+-- (Phase 27) and the Paid/Partially Paid label (this phase) by exactly
+-- the credited amount.
+create or replace view public.invoice_payment_status
+with (security_invoker = true) as
+select
+  i.id as invoice_id,
+  i.company_id,
+  i.type,
+  i.invoice_number,
+  i.grand_total,
+  coalesce(sum(p.amount), 0) + coalesce(adv.applied_amount, 0) + coalesce(cn.credited_amount, 0) as amount_paid,
+  i.grand_total - coalesce(sum(p.amount), 0) - coalesce(adv.applied_amount, 0) - coalesce(cn.credited_amount, 0) as balance_due
+from public.invoices i
+left join public.payments p on p.invoice_id = i.id and p.status = 'posted'
+left join (
+  select applied_invoice_id, sum(amount) as applied_amount
+  from public.customer_advances
+  where status = 'applied'
+  group by applied_invoice_id
+) adv on adv.applied_invoice_id = i.id
+left join (
+  select invoice_id, sum(grand_total) as credited_amount
+  from public.credit_notes
+  group by invoice_id
+) cn on cn.invoice_id = i.id
+where i.status = 'posted'
+group by i.id, adv.applied_amount, cn.credited_amount;
+
+-- ============================================================
+-- Phase 30 — Cloud Kitchen: Wastage & Delivery Settlement
+-- ============================================================
+
+-- Wastage — spoilage/expiry/damage/loss write-off for a raw material or
+-- finished good. Reuses consume_item_fefo() (Phase 10) for the actual
+-- stock consumption and cost basis, exactly like a sale or production
+-- consumption does — never a second stock-reduction implementation.
+create table public.wastage (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  branch_id uuid references public.branches (id) default public.current_user_default_branch_id(),
+  item_id uuid not null references public.items (id),
+  quantity numeric(14, 2) not null check (quantity > 0),
+  reason text not null check (reason in (
+    'spoilage', 'expired', 'damaged', 'production_loss', 'preparation_loss', 'quality_rejection', 'other'
+  )),
+  wastage_date date not null,
+  cost numeric(14, 2) not null default 0 check (cost >= 0),
+  entry_group_id uuid not null,
+  created_at timestamptz not null default now()
+);
+
+grant select, insert, update, delete on public.wastage to authenticated;
+grant all on public.wastage to service_role;
+
+alter table public.wastage enable row level security;
+
+create policy wastage_select on public.wastage
+  for select using (company_id = public.current_user_company_id());
+-- No insert/update/delete policy — all writes happen through
+-- post_wastage(), same reasoning as every other posting table.
+
+-- Always posts the expense (never "where configured") — silently letting
+-- a write-off skip the P&L would understate a real cost, which CLAUDE.md
+-- section 5's minimalism carve-outs explicitly except ("financial
+-- calculations... never cut corners").
+create or replace function public.post_wastage(
+  p_item_id uuid,
+  p_quantity numeric,
+  p_reason text,
+  p_wastage_date date
+)
+returns public.wastage
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_item record;
+  v_cost numeric(14, 2);
+  v_wastage_expense_account_id uuid;
+  v_inventory_account_id uuid;
+  v_entry_group uuid := gen_random_uuid();
+  v_wastage public.wastage;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to record wastage.';
+  end if;
+  perform public.reject_if_period_closed(v_company_id, p_wastage_date);
+
+  if p_reason not in ('spoilage', 'expired', 'damaged', 'production_loss', 'preparation_loss', 'quality_rejection', 'other') then
+    raise exception 'Invalid wastage reason: %', p_reason;
+  end if;
+
+  select item_type into v_item from public.items where id = p_item_id and company_id = v_company_id and type = 'good';
+  if not found then
+    raise exception 'Item not found in your company, or not a physical good.';
+  end if;
+
+  select id into v_wastage_expense_account_id from public.chart_of_accounts
+    where company_id = v_company_id and system_role = 'wastage_expense';
+  select id into v_inventory_account_id from public.chart_of_accounts
+    where company_id = v_company_id
+      and system_role = case when v_item.item_type = 'raw_material' then 'raw_material_inventory' else 'finished_goods_inventory' end;
+  if v_wastage_expense_account_id is null or v_inventory_account_id is null then
+    raise exception 'Missing system ledger account(s) for this company.';
+  end if;
+
+  insert into public.wastage (company_id, item_id, quantity, reason, wastage_date, entry_group_id)
+  values (v_company_id, p_item_id, p_quantity, p_reason, p_wastage_date, v_entry_group)
+  returning * into v_wastage;
+
+  v_cost := public.consume_item_fefo(v_company_id, p_item_id, p_quantity, 'wastage', v_wastage.id, p_wastage_date);
+
+  update public.wastage set cost = v_cost where id = v_wastage.id returning * into v_wastage;
+
+  if v_cost > 0 then
+    insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+      values (v_company_id, v_entry_group, p_wastage_date, v_wastage_expense_account_id, v_cost, 0, 'wastage', v_wastage.id);
+    insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+      values (v_company_id, v_entry_group, p_wastage_date, v_inventory_account_id, 0, v_cost, 'wastage', v_wastage.id);
+  end if;
+
+  return v_wastage;
+end;
+$$;
+
+grant execute on function public.post_wastage(uuid, numeric, text, date) to authenticated;
+
+-- Delivery platforms (Swiggy, Zomato, etc.) — not "in-store": walk-in
+-- sales settle immediately with no commission deducted and use the
+-- existing post_payment() flow unchanged. Only online platforms that pay
+-- out later, net of commission, need this settlement/reconciliation layer.
+create table public.delivery_platforms (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  name text not null,
+  created_at timestamptz not null default now(),
+  unique (company_id, name)
+);
+
+grant select, insert, update, delete on public.delivery_platforms to authenticated;
+grant all on public.delivery_platforms to service_role;
+
+alter table public.delivery_platforms enable row level security;
+
+create policy delivery_platforms_select on public.delivery_platforms
+  for select using (company_id = public.current_user_company_id());
+create policy delivery_platforms_write on public.delivery_platforms
+  for insert with check (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy delivery_platforms_update on public.delivery_platforms
+  for update using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+
+-- Each order already has its own sales invoice (confirmed with the user —
+-- one invoice per Swiggy/Zomato order, same as any other sale). A
+-- settlement is a later, BATCHED bank payout covering many orders at once,
+-- net of the platform's commission — so gross_order_value is deliberately
+-- DERIVED from the linked invoices below, never entered by hand, the same
+-- "never let two independently-entered numbers drift" discipline
+-- invoices/credit notes already apply to their own header totals.
+--
+-- The commission/other_fees breakdown here is a reasonable generic model
+-- (Dr Bank + Dr Commission Expense = Cr Accounts Receivable) — the exact
+-- categories a real Swiggy/Zomato payout statement itemizes weren't known
+-- at build time; flagged in ROADMAP.md to double-check against an actual
+-- settlement statement.
+create table public.delivery_settlements (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  platform_id uuid not null references public.delivery_platforms (id),
+  settlement_date date not null,
+  gross_order_value numeric(14, 2) not null,
+  commission numeric(14, 2) not null check (commission >= 0),
+  other_fees numeric(14, 2) not null default 0 check (other_fees >= 0),
+  settlement_amount numeric(14, 2) not null,
+  bank_account_id uuid not null references public.chart_of_accounts (id),
+  entry_group_id uuid not null,
+  created_at timestamptz not null default now(),
+  constraint delivery_settlements_amount_consistent
+    check (settlement_amount = gross_order_value - commission - other_fees)
+);
+
+grant select, insert, update, delete on public.delivery_settlements to authenticated;
+grant all on public.delivery_settlements to service_role;
+
+alter table public.delivery_settlements enable row level security;
+
+create policy delivery_settlements_select on public.delivery_settlements
+  for select using (company_id = public.current_user_company_id());
+-- No insert/update/delete policy — all writes happen through
+-- post_delivery_settlement().
+
+-- Which specific order invoices a settlement covers — the audit trail
+-- from bank deposit back to individual orders. unique(invoice_id): an
+-- invoice can only ever belong to one settlement (defense in depth —
+-- post_delivery_settlement() already checks this explicitly too).
+create table public.delivery_settlement_invoices (
+  settlement_id uuid not null references public.delivery_settlements (id),
+  invoice_id uuid not null references public.invoices (id) unique,
+  primary key (settlement_id, invoice_id)
+);
+
+grant select, insert, update, delete on public.delivery_settlement_invoices to authenticated;
+grant all on public.delivery_settlement_invoices to service_role;
+
+alter table public.delivery_settlement_invoices enable row level security;
+
+create policy delivery_settlement_invoices_select on public.delivery_settlement_invoices
+  for select using (
+    exists (
+      select 1 from public.delivery_settlements
+      where delivery_settlements.id = delivery_settlement_invoices.settlement_id
+        and delivery_settlements.company_id = public.current_user_company_id()
+    )
+  );
+
+create or replace function public.post_delivery_settlement(
+  p_platform_id uuid,
+  p_settlement_date date,
+  p_invoice_ids uuid[],
+  p_commission numeric,
+  p_other_fees numeric,
+  p_bank_account_id uuid
+)
+returns public.delivery_settlements
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_gross numeric(14, 2) := 0;
+  v_settlement_amount numeric(14, 2);
+  v_entry_group uuid := gen_random_uuid();
+  v_settlement public.delivery_settlements;
+  v_ar_account_id uuid;
+  v_commission_account_id uuid;
+  v_invoice_id uuid;
+  v_invoice record;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to post delivery settlements.';
+  end if;
+  perform public.reject_if_period_closed(v_company_id, p_settlement_date);
+
+  if not exists (select 1 from public.delivery_platforms where id = p_platform_id and company_id = v_company_id) then
+    raise exception 'Delivery platform not found in your company.';
+  end if;
+
+  if array_length(p_invoice_ids, 1) is null or array_length(p_invoice_ids, 1) = 0 then
+    raise exception 'A settlement needs at least one invoice.';
+  end if;
+
+  if p_commission < 0 or p_other_fees < 0 then
+    raise exception 'Commission and fees cannot be negative.';
+  end if;
+
+  if not exists (
+    select 1 from public.chart_of_accounts
+    where id = p_bank_account_id and company_id = v_company_id and type = 'asset'
+  ) then
+    raise exception 'Bank/cash account not found, not in your company, or not an asset account.';
+  end if;
+
+  select id into v_ar_account_id from public.chart_of_accounts
+    where company_id = v_company_id and system_role = 'accounts_receivable';
+  select id into v_commission_account_id from public.chart_of_accounts
+    where company_id = v_company_id and system_role = 'platform_commission_expense';
+  if v_ar_account_id is null or v_commission_account_id is null then
+    raise exception 'Missing system ledger account(s) for this company.';
+  end if;
+
+  foreach v_invoice_id in array p_invoice_ids
+  loop
+    select i.*, ips.balance_due into v_invoice
+      from public.invoices i
+      join public.invoice_payment_status ips on ips.invoice_id = i.id
+      where i.id = v_invoice_id and i.company_id = v_company_id;
+    if not found then
+      raise exception 'Invoice % not found in your company, or not posted.', v_invoice_id;
+    end if;
+    if v_invoice.type <> 'sales' then
+      raise exception 'Invoice % is not a sales invoice.', v_invoice_id;
+    end if;
+    if v_invoice.balance_due <> v_invoice.grand_total then
+      raise exception 'Invoice % has already had a payment or credit note recorded against it — its balance no longer matches its original total.', v_invoice_id;
+    end if;
+    if exists (select 1 from public.delivery_settlement_invoices where invoice_id = v_invoice_id) then
+      raise exception 'Invoice % has already been included in another settlement.', v_invoice_id;
+    end if;
+    v_gross := v_gross + v_invoice.grand_total;
+  end loop;
+
+  v_settlement_amount := v_gross - p_commission - p_other_fees;
+  if v_settlement_amount < 0 then
+    raise exception 'Commission and fees (%) cannot exceed the gross order value (%).', p_commission + p_other_fees, v_gross;
+  end if;
+
+  insert into public.delivery_settlements (
+    company_id, platform_id, settlement_date, gross_order_value, commission, other_fees,
+    settlement_amount, bank_account_id, entry_group_id
+  ) values (
+    v_company_id, p_platform_id, p_settlement_date, v_gross, p_commission, p_other_fees,
+    v_settlement_amount, p_bank_account_id, v_entry_group
+  ) returning * into v_settlement;
+
+  foreach v_invoice_id in array p_invoice_ids
+  loop
+    insert into public.delivery_settlement_invoices (settlement_id, invoice_id) values (v_settlement.id, v_invoice_id);
+  end loop;
+
+  insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+    values (v_company_id, v_entry_group, p_settlement_date, p_bank_account_id, v_settlement_amount, 0, 'delivery_settlement', v_settlement.id);
+  if (p_commission + p_other_fees) > 0 then
+    insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+      values (v_company_id, v_entry_group, p_settlement_date, v_commission_account_id, p_commission + p_other_fees, 0, 'delivery_settlement', v_settlement.id);
+  end if;
+  insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+    values (v_company_id, v_entry_group, p_settlement_date, v_ar_account_id, 0, v_gross, 'delivery_settlement', v_settlement.id);
+
+  return v_settlement;
+end;
+$$;
+
+grant execute on function public.post_delivery_settlement(uuid, date, uuid[], numeric, numeric, uuid) to authenticated;
+
+-- ============================================================
+-- Phase 31 — Consulting Module (major new module, additive)
+-- A consulting client is just a party with type customer/both — no
+-- separate clients master, reusing Phase 22's party model. Billing reuses
+-- post_invoice() directly (see post_project_invoice() below) — no
+-- parallel billing/tax path.
+-- ============================================================
+
+create table public.projects (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  branch_id uuid references public.branches (id) default public.current_user_default_branch_id(),
+  project_code text not null,
+  client_party_id uuid not null references public.parties (id),
+  project_manager_employee_id uuid references public.employees (id),
+  start_date date not null,
+  end_date date,
+  budget numeric(14, 2) check (budget is null or budget >= 0),
+  status text not null default 'active' check (status in ('active', 'completed', 'cancelled')),
+  -- Informational only — the only billing mechanism actually built here is
+  -- hourly, from approved timesheets (see post_project_invoice()). A fixed-
+  -- fee/milestone project can still be tracked, just invoiced the normal
+  -- way through Sales Invoices rather than through this project.
+  billing_method text not null default 'hourly' check (billing_method in ('hourly', 'fixed')),
+  billing_rate numeric(14, 2) check (billing_rate is null or billing_rate >= 0),
+  cost_centre text,
+  created_at timestamptz not null default now(),
+  unique (company_id, project_code)
+);
+
+grant select, insert, update, delete on public.projects to authenticated;
+grant all on public.projects to service_role;
+
+alter table public.projects enable row level security;
+
+create policy projects_select on public.projects
+  for select using (company_id = public.current_user_company_id());
+create policy projects_write on public.projects
+  for insert with check (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy projects_update on public.projects
+  for update using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy projects_delete on public.projects
+  for delete using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+
+create table public.project_tasks (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references public.projects (id),
+  name text not null,
+  estimated_hours numeric(14, 2) check (estimated_hours is null or estimated_hours >= 0),
+  created_at timestamptz not null default now()
+);
+
+grant select, insert, update, delete on public.project_tasks to authenticated;
+grant all on public.project_tasks to service_role;
+
+alter table public.project_tasks enable row level security;
+
+-- No company_id column — scoped by joining through projects, same
+-- reasoning as invoice_line_items/credit_note_line_items above.
+create policy project_tasks_select on public.project_tasks
+  for select using (
+    exists (select 1 from public.projects where projects.id = project_tasks.project_id and projects.company_id = public.current_user_company_id())
+  );
+create policy project_tasks_write on public.project_tasks
+  for insert with check (
+    exists (select 1 from public.projects where projects.id = project_tasks.project_id and projects.company_id = public.current_user_company_id())
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy project_tasks_update on public.project_tasks
+  for update using (
+    exists (select 1 from public.projects where projects.id = project_tasks.project_id and projects.company_id = public.current_user_company_id())
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy project_tasks_delete on public.project_tasks
+  for delete using (
+    exists (select 1 from public.projects where projects.id = project_tasks.project_id and projects.company_id = public.current_user_company_id())
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+
+-- invoice_id is set once these hours are billed (post_project_invoice()
+-- below) — plain client UPDATE can still touch it (same trust level this
+-- app already extends admin/accountant on every other master-data table;
+-- it's a "has this been billed" tracking flag, not itself ledger-affecting
+-- — the invoice's own journal entries are what's actually immutable).
+create table public.timesheets (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  project_id uuid not null references public.projects (id),
+  task_id uuid references public.project_tasks (id),
+  employee_id uuid not null references public.employees (id),
+  work_date date not null,
+  hours numeric(14, 2) not null check (hours > 0),
+  billable boolean not null default true,
+  billing_rate numeric(14, 2) check (billing_rate is null or billing_rate >= 0),
+  cost_rate numeric(14, 2) check (cost_rate is null or cost_rate >= 0),
+  approval_status text not null default 'pending' check (approval_status in ('pending', 'approved', 'rejected')),
+  invoice_id uuid references public.invoices (id),
+  created_at timestamptz not null default now()
+);
+
+grant select, insert, update, delete on public.timesheets to authenticated;
+grant all on public.timesheets to service_role;
+
+alter table public.timesheets enable row level security;
+
+create policy timesheets_select on public.timesheets
+  for select using (company_id = public.current_user_company_id());
+create policy timesheets_write on public.timesheets
+  for insert with check (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy timesheets_update on public.timesheets
+  for update using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy timesheets_delete on public.timesheets
+  for delete using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+
+-- Reporting-only cost record for project profitability — deliberately NOT
+-- a ledger posting. If this cost also involves a real vendor payment
+-- needing GST input credit, enter that separately through Purchase
+-- Invoices as usual; this table just tags a cost to a project for
+-- profitability, the same way it would be tracked on a spreadsheet today.
+create table public.project_expenses (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  project_id uuid not null references public.projects (id),
+  expense_date date not null,
+  description text not null,
+  amount numeric(14, 2) not null check (amount > 0),
+  category text,
+  created_at timestamptz not null default now()
+);
+
+grant select, insert, update, delete on public.project_expenses to authenticated;
+grant all on public.project_expenses to service_role;
+
+alter table public.project_expenses enable row level security;
+
+create policy project_expenses_select on public.project_expenses
+  for select using (company_id = public.current_user_company_id());
+create policy project_expenses_write on public.project_expenses
+  for insert with check (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy project_expenses_update on public.project_expenses
+  for update using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy project_expenses_delete on public.project_expenses
+  for delete using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+
+-- Generates a normal sales invoice from a set of approved, billable,
+-- not-yet-invoiced timesheet entries — grouped by billing_rate into one
+-- line item per rate, using the given item_id (its own hsn_sac_code
+-- drives the tax lookup inside post_invoice(), same as every other sale;
+-- never a parallel billing/tax path). Marks the timesheets invoiced in
+-- the same transaction as posting, so a failure rolls back both together.
+create or replace function public.post_project_invoice(
+  p_project_id uuid,
+  p_invoice_date date,
+  p_item_id uuid,
+  p_revenue_expense_account_id uuid,
+  p_timesheet_ids uuid[]
+)
+returns public.invoices
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_project public.projects;
+  v_line_items jsonb;
+  v_invoice public.invoices;
+  v_timesheet_id uuid;
+  v_ts public.timesheets;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to invoice projects.';
+  end if;
+
+  select * into v_project from public.projects where id = p_project_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Project not found in your company.';
+  end if;
+
+  if array_length(p_timesheet_ids, 1) is null or array_length(p_timesheet_ids, 1) = 0 then
+    raise exception 'Select at least one timesheet entry to invoice.';
+  end if;
+
+  foreach v_timesheet_id in array p_timesheet_ids
+  loop
+    select * into v_ts from public.timesheets
+      where id = v_timesheet_id and project_id = p_project_id and company_id = v_company_id;
+    if not found then
+      raise exception 'Timesheet entry % does not belong to this project.', v_timesheet_id;
+    end if;
+    if not v_ts.billable then
+      raise exception 'Timesheet entry % is not billable.', v_timesheet_id;
+    end if;
+    if v_ts.approval_status <> 'approved' then
+      raise exception 'Timesheet entry % is not approved (status: %).', v_timesheet_id, v_ts.approval_status;
+    end if;
+    if v_ts.invoice_id is not null then
+      raise exception 'Timesheet entry % has already been invoiced.', v_timesheet_id;
+    end if;
+    if v_ts.billing_rate is null then
+      raise exception 'Timesheet entry % has no billing rate set.', v_timesheet_id;
+    end if;
+  end loop;
+
+  select jsonb_agg(jsonb_build_object('item_id', p_item_id, 'quantity', total_hours, 'rate', billing_rate))
+    into v_line_items
+    from (
+      select billing_rate, sum(hours) as total_hours
+      from public.timesheets
+      where id = any(p_timesheet_ids)
+      group by billing_rate
+    ) grouped;
+
+  v_invoice := public.post_invoice('sales', v_project.client_party_id, p_invoice_date, p_revenue_expense_account_id, v_line_items);
+
+  update public.timesheets set invoice_id = v_invoice.id where id = any(p_timesheet_ids);
+
+  return v_invoice;
+end;
+$$;
+
+grant execute on function public.post_project_invoice(uuid, date, uuid, uuid, uuid[]) to authenticated;
+
+-- Revenue is the DISTINCT invoiced project invoices' own subtotal
+-- (pre-tax — GST collected isn't revenue), never joined row-by-row
+-- through invoice_line_items (which would multiply/overcount whenever a
+-- project invoice has more than one rate-grouped line). Labour cost
+-- counts ALL timesheets (billable or not) at their own cost_rate — an
+-- unbilled internal hour still costs the business. Read-only, invoker
+-- rights, same as every other report function.
+create function public.project_profitability(p_project_id uuid)
+returns table (
+  revenue numeric, labour_cost numeric, expense_cost numeric,
+  total_cost numeric, profit numeric, margin_pct numeric
+)
+language sql
+stable
+as $$
+  with rev as (
+    select coalesce(sum(i.subtotal), 0) as revenue
+    from public.invoices i
+    where i.id in (
+      select distinct invoice_id from public.timesheets
+      where project_id = p_project_id and invoice_id is not null
+    )
+  ),
+  labour as (
+    select coalesce(sum(hours * coalesce(cost_rate, 0)), 0) as labour_cost
+    from public.timesheets where project_id = p_project_id
+  ),
+  expenses as (
+    select coalesce(sum(amount), 0) as expense_cost
+    from public.project_expenses where project_id = p_project_id
+  )
+  select
+    rev.revenue, labour.labour_cost, expenses.expense_cost,
+    labour.labour_cost + expenses.expense_cost,
+    rev.revenue - (labour.labour_cost + expenses.expense_cost),
+    case when rev.revenue > 0
+      then round((rev.revenue - (labour.labour_cost + expenses.expense_cost)) / rev.revenue * 100, 2)
+      else null
+    end
+  from rev, labour, expenses;
+$$;
+
+grant execute on function public.project_profitability(uuid) to authenticated;

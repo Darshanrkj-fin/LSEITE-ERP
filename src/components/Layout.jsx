@@ -32,6 +32,8 @@ const navGroups = [
       { to: '/production-entry', label: 'Production Entry' },
       { to: '/rnd-trial', label: 'R&D Trial' },
       { to: '/custom-orders', label: 'Custom Orders' },
+      { to: '/wastage', label: 'Wastage' },
+      { to: '/delivery-settlements', label: 'Delivery Settlements' },
     ],
   },
   {
@@ -42,6 +44,10 @@ const navGroups = [
       { to: '/subscriptions', label: 'Subscriptions' },
       { to: '/subscription-cycles', label: 'Subscription Cycles' },
     ],
+  },
+  {
+    label: 'Consulting',
+    items: [{ to: '/projects', label: 'Projects' }],
   },
   {
     label: 'Purchases & Banking',
@@ -66,6 +72,8 @@ const navGroups = [
       { to: '/item-profitability', label: 'Item Profitability' },
       { to: '/stock-valuation', label: 'Stock Valuation' },
       { to: '/batch-expiry-report', label: 'Batch / Expiry Report' },
+      { to: '/ar-ap-aging', label: 'AR/AP Aging' },
+      { to: '/party-statement', label: 'Party Statement' },
     ],
   },
   {
@@ -79,6 +87,7 @@ const navGroups = [
     label: 'Admin',
     items: [
       { to: '/gst-alerts', label: 'GST Alerts' },
+      { to: '/accounting-periods', label: 'Accounting Periods' },
       { to: '/audit-log', label: 'Audit Log', requiresAdmin: true },
       { to: '/manage-users', label: 'Manage Users', requiresManageUsers: true },
     ],

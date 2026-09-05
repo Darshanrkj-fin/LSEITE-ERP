@@ -38,6 +38,12 @@ import { AuditLog } from './pages/AuditLog'
 import { CashFlow } from './pages/CashFlow'
 import { FundFlow } from './pages/FundFlow'
 import { JournalRegister } from './pages/JournalRegister'
+import { AccountingPeriods } from './pages/AccountingPeriods'
+import { ArApAging } from './pages/ArApAging'
+import { PartyStatement } from './pages/PartyStatement'
+import { Wastage } from './pages/Wastage'
+import { DeliverySettlements } from './pages/DeliverySettlements'
+import { Projects } from './pages/Projects'
 
 function App() {
   return (
@@ -84,6 +90,12 @@ function App() {
         <Route path="/cash-flow" element={<CashFlow />} />
         <Route path="/fund-flow" element={<FundFlow />} />
         <Route path="/journal-register" element={<JournalRegister />} />
+        <Route path="/accounting-periods" element={<AccountingPeriods />} />
+        <Route path="/ar-ap-aging" element={<ArApAging />} />
+        <Route path="/party-statement" element={<PartyStatement />} />
+        <Route path="/wastage" element={<Wastage />} />
+        <Route path="/delivery-settlements" element={<DeliverySettlements />} />
+        <Route path="/projects/*" element={<Projects />} />
         <Route path="/change-password" element={<ChangePassword />} />
         <Route path="/manage-users" element={<ManageUsers />} />
       </Route>

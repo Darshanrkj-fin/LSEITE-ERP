@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { useAuth } from '../context/AuthContext'
 
-const PARTY_TYPES = ['customer', 'vendor']
+const PARTY_TYPES = ['customer', 'vendor', 'both']
 
 const emptyParty = {
   name: '',

@@ -14,6 +14,7 @@ export function InvoiceList({ type, basePath }) {
   const labels = LABELS[type]
 
   const [invoices, setInvoices] = useState([])
+  const [paymentStatus, setPaymentStatus] = useState({}) // invoice_id -> balance_due
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -21,15 +22,19 @@ export function InvoiceList({ type, basePath }) {
     let cancelled = false
     async function load() {
       setLoading(true)
-      const { data, error: fetchError } = await supabase
-        .from('invoices')
-        .select('id, invoice_number, invoice_date, status, grand_total, parties(name)')
-        .eq('type', type)
-        .order('invoice_date', { ascending: false })
-        .order('invoice_number', { ascending: false })
+      const [{ data, error: fetchError }, { data: statusRows }] = await Promise.all([
+        supabase
+          .from('invoices')
+          .select('id, invoice_number, invoice_date, status, grand_total, parties(name)')
+          .eq('type', type)
+          .order('invoice_date', { ascending: false })
+          .order('invoice_number', { ascending: false }),
+        supabase.from('invoice_payment_status').select('invoice_id, balance_due').eq('type', type),
+      ])
       if (cancelled) return
       if (fetchError) setError(fetchError.message)
       else setInvoices(data)
+      setPaymentStatus(Object.fromEntries((statusRows ?? []).map((r) => [r.invoice_id, r.balance_due])))
       setLoading(false)
     }
     load()
@@ -37,6 +42,18 @@ export function InvoiceList({ type, basePath }) {
       cancelled = true
     }
   }, [type])
+
+  // Display-only label layered on top of the real posted/cancelled state —
+  // no due-date field exists yet, so there's no "Overdue" here (would need
+  // a fabricated threshold); see ROADMAP.md Phase 29.
+  const paymentLabel = (inv) => {
+    if (inv.status !== 'posted') return null
+    const balance = paymentStatus[inv.id]
+    if (balance == null) return null
+    if (balance <= 0.005) return 'Paid'
+    if (balance < inv.grand_total - 0.005) return 'Partially Paid'
+    return 'Unpaid'
+  }
 
   if (loading) return <p className="text-muted">Loading…</p>
 
@@ -79,7 +96,10 @@ export function InvoiceList({ type, basePath }) {
               </td>
               <td className="py-2 pr-4">{inv.invoice_date}</td>
               <td className="py-2 pr-4">{inv.parties?.name}</td>
-              <td className="py-2 pr-4 capitalize">{inv.status}</td>
+              <td className="py-2 pr-4 capitalize">
+                {inv.status}
+                {paymentLabel(inv) && <span className="text-muted"> ({paymentLabel(inv)})</span>}
+              </td>
               <td className="py-2 pr-4">{inv.grand_total}</td>
             </tr>
           ))}

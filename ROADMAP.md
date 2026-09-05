@@ -15,11 +15,20 @@ A cloud-hosted accounting system for a single company (multi-branch ready) that 
   produced as finished goods)
 - Subscriptions: recurring customer plans with variable items per cycle (not a fixed box)
 
-Every phase through Phase 24 is **built and live-tested** — see section 5 for Phases 1–19 and
-section 5b for Phases 20–24 (multi-branch schema readiness, quote management, expanded customer
-fields, advance/deposit payments, and a cohesive visual design system, drawn from a follow-up gap
-review). Only the "Later" items after section 5b remain out of scope, and only if the business's
-shape changes.
+Every phase through Phase 31 is **built and live-tested** — see section 5 for Phases 1–19, section
+5b for Phases 20–24 (multi-branch schema readiness, quote management, expanded customer fields,
+advance/deposit payments, and a cohesive visual design system, drawn from a follow-up gap review),
+Phase 25 (bank statement PDF import, added outside the original phase plan at user request), and
+section 5d for Phases 26–31 (repo/platform hygiene, accounting period locking, AR/AP aging, party
+statements, units/warehouses schema, flexible customer-and-vendor parties, partial credit/debit
+notes, wastage write-offs, Swiggy/Zomato delivery settlement reconciliation, and a full Consulting
+module with timesheet-based billing — the start of the `UPDATE.md` architecture review below).
+
+Phases 32–37 (section 5d) are **planned, not yet built** — a mapping of `UPDATE.md`'s broader
+architecture review (cloud kitchen + consulting as twin business lines, HR/payroll, TDS, fixed
+assets, Tally export, and more) onto this file's existing phase format, scoped additive-first per
+the decisions in section 5c. Only the "Later" items after section 5d remain fully out of scope, and
+only if the business's shape changes.
 
 ## 1. Tech Stack (all free-tier)
 | Layer | Choice | Why |
@@ -509,7 +518,352 @@ feature-gap review.
 - Only supports this one bank's layout for now — a different bank's statement format would need its
   own parser (the header-detection and coordinate logic here is specific to IDFC FIRST's PDF layout).
 
-Only the items below remain after Phase 25, and only if the business's shape changes.
+## 5c. Decisions Already Made (UPDATE.md architecture review, 2026-09-05)
+`UPDATE.md` is a 60-section architecture review proposing a much larger v2 direction: Cloud
+Kitchen + Consulting as twin business lines, a generalized tax/party/journal model, full HR/payroll,
+TDS, fixed assets, Tally export, and more. Two scope decisions were made up front so they aren't
+re-litigated per phase below:
+- **Additive-first, defer refactors.** Where `UPDATE.md` calls for *refactoring* an already-built,
+  tested foundation — the journal posting model, the party model, the tax-calculation model, the
+  banking model, or payroll — that refactor is deferred unless a concrete gap forces it. New phases
+  build on top of what exists instead. Each phase below flags what it's deliberately not rebuilding
+  and why.
+- **Phase order** continues this file's existing numbering from Phase 26, following the priority
+  order `UPDATE.md` §50/§51 itself recommends (accounting integrity and master data first, dashboard
+  polish last — "do not prioritize visual redesign above accounting correctness").
+
+## 5d. Phased Build Plan — Phases 26–37 (from the UPDATE.md architecture review)
+
+### Phase 26 — Repository & Platform Hygiene ✅
+- Confirmed repo hygiene already held: `node_modules/`, `dist/`, `build/`, `.env` were already
+  gitignored, and `npm install && npm run build` succeeds clean (confirmed `dist/` stays untracked
+  once it exists, via `git check-ignore`).
+- Added `.env.example` (didn't exist before this phase) listing the variables already documented in
+  §2 above, placeholder values only — never real keys.
+- Documented the explicit-PostgREST-grants convention at the end of `schema.sql` (`grant select,
+  insert, update, delete on <table> to authenticated; grant all on <table> to service_role;`) for
+  every `create table` from this phase onward, ahead of the October 30, 2026 deadline — see §6 below
+  for what this actually requires (existing tables are unaffected either way). No table was created
+  in this phase, so nothing needed the grants yet — this only establishes the pattern for Phase 27+.
+- Added a top-level React error boundary (`src/components/ErrorBoundary.jsx`, wrapping the app in
+  `main.jsx` above `BrowserRouter`/`AuthProvider`) so an unexpected render error shows a plain
+  "Something went wrong, Reload" screen instead of a blank page — the one genuinely new piece of
+  code in this phase.
+- **Verification note**: `npm run build` and `npm run lint` both ran clean against the changed files
+  (the only lint warning is a pre-existing unrelated one in `SubscriptionCycleDetail.jsx`). A live
+  browser smoke test was attempted (Playwright) but couldn't run — the sandbox had no network route
+  to download the Chromium binary — so the error boundary's actual rendering in a browser is
+  unverified beyond the successful build/lint. Flagging this rather than claiming a browser test
+  that didn't happen.
+- Self-check per CLAUDE.md §7: no schema or posting-logic change in this phase, so trial balance is
+  unaffected.
+- **Deliberately not adopted**: a `supabase/migrations/` folder structure. The single dated-sections
+  `schema.sql` file (with git history as the version log) has carried 25 phases of real, tested
+  schema changes with no actual pain point — switching now would be process churn with no concrete
+  problem it solves, against the minimalism rule in CLAUDE.md §5.
+
+### Phase 27 — Accounting Periods & Reporting Dimensions ✅
+- New `accounting_periods` table (company_id, period_start, period_end, status: open/closed — the
+  "under review"/"locked" states from `UPDATE.md` §6.5 collapse into open/closed since this is a
+  single-accountant business, not a multi-stage approval org). Defaults to open; only admin can
+  create/close/reopen one (RLS insert/update policies), via the new `AccountingPeriods.jsx` screen
+  (Admin nav group) — plain list + inline add + Close/Reopen toggle, same shape as `TaxRates.jsx`.
+- `post_invoice`, `post_payment`, `cancel_payment`, `post_customer_advance`,
+  `apply_advance_to_invoice`, `refund_customer_advance`, and `cancel_invoice` — two more than
+  originally scoped (`cancel_payment` and `apply_advance_to_invoice`), added for consistency since
+  they post/reverse journal entries the same way — each get one additional guard via a new shared
+  `reject_if_period_closed(company_id, date)` function: reject if the posting date (or `current_date`
+  for the four that always post today) falls in a closed period for that company. An additive check
+  inside the existing SECURITY DEFINER functions — no change to how they already build or balance
+  journal entries.
+- New nullable `business_unit` text column on `invoices` and `journal_entries` (Cloud
+  Kitchen/Consulting/R&D/Administration — plain text, not a new table, since the set is small and
+  stable) — enables business-unit-filtered P&L later without restructuring the ledger. No UI reads or
+  writes it yet; left for a future phase that actually needs the dimension.
+- New `ar_ap_aging()` function + `ArApAging.jsx` report (Reports nav group): buckets are by days
+  since `invoice_date`, not a formal due date — this app doesn't track payment terms, so "Current"
+  means the invoice itself is 0-30 days old, not "not yet due." Labeled `Current (0-30)`/`31-60`/
+  `61-90`/`90+` (4 buckets, not `UPDATE.md`'s 5, since there's no due-date concept to split "Current"
+  from "1-30 days late").
+- New `party_statement()` function + `PartyStatement.jsx` report: chronological invoice/payment
+  history for one party, running balance summed client-side (debit minus credit throughout — positive
+  means the party owes the business, negative means the business owes the party; this applies to
+  vendors too, so a running vendor balance normally reads negative, and the page says so directly).
+- **Real bug caught during testing**: `AccountingPeriods.jsx`'s insert never set `company_id` at all
+  (unlike `BankTransactions.jsx`, which explicitly passes `profile.company_id`) — `accounting_periods`
+  has no default for that column, so every period creation would have failed with a not-null
+  violation. Fixed before this phase was reported done.
+- **Real gap caught during the first test pass**: after running only the "everything new" SQL block,
+  a live test showed the standalone `reject_if_period_closed()` RPC correctly rejecting a closed-period
+  date, but `post_invoice()` itself let the same date straight through to its next validation step —
+  proving the `create or replace function` replacements for the 7 posting functions hadn't actually
+  been applied yet (only pasted as a plan, not run). Re-supplied as one paste-ready SQL file and
+  re-verified: this time `post_invoice`, `post_payment`, and `post_customer_advance` all correctly
+  rejected a closed-period date and correctly let an open date through to normal validation.
+- Tested live end-to-end with throwaway data (a temporary income account, customer, item, tax rate,
+  invoice, and payment — all deleted after): posted a real sales invoice (₹1,180 grand total, 18%
+  same-state CGST+SGST) dated 45 days before "today," partially paid it (₹500), and confirmed
+  `ar_ap_aging()` returned the exact expected balance due (₹680), days outstanding (45), and bucket
+  (31-60); confirmed `party_statement()`'s rows summed to the same ₹680 running balance the page's own
+  logic would compute; created a period through the exact insert shape `AccountingPeriods.jsx` uses,
+  closed it, and confirmed `post_invoice()` was rejected for a date inside it — the same path the app
+  itself would take. Full cleanup afterward (journal entries, invoice, payment, tax rate, item, party,
+  test account, period, throwaway user) — confirmed `trial_balance()` back to 0 = 0 and
+  `chart_of_accounts` back to exactly the 14 system-seeded rows.
+- Browser-level UI verification wasn't possible this phase either (same Playwright/Chromium download
+  failure as Phase 26) — relied on exercising the exact same Supabase queries/RPC calls each page
+  makes, from a real signed-in session, rather than a rendered screenshot.
+- One harmless, unavoidable side effect of testing real invoice posting: the `sales`/`2026-27`
+  invoice-number counter now has a small gap where the deleted test invoice's number was — numbering
+  counters only ever increment (never rewound, to avoid ever risking a duplicate number later), so
+  this is left as-is, same as any voided real invoice would leave.
+- **Explicitly deferred**: replacing `journal_entries` with a `journal_batches`/`journal_lines`
+  draft→validated→approved→posted lifecycle, and a manual-journal-entry approval workflow. Neither
+  closes a real gap today — there's no manual-journal feature to restrict, and every existing
+  posting path already runs through a SECURITY DEFINER function with no client insert policy.
+  Revisit only if a manual-journal feature is ever actually requested.
+
+### Phase 28 — Master Data: Units, Warehouses, Flexible Party Roles ✅
+- New `units` / `unit_conversions` tables (e.g. kg↔g, litre↔ml). `items` keeps its existing `unit`
+  text column; a nullable `unit_id` is added alongside it, not replacing it — additive, not a
+  breaking rename. No screen reads or writes `unit_id`/`unit_conversions` yet, same as
+  `business_unit` in Phase 27 — schema-only, for a future phase that actually needs it.
+- New `warehouses` table (company_id, branch_id, name), one default warehouse auto-seeded per
+  branch (same backfill pattern Phase 20 used for branches), plus a nullable `warehouse_id` on
+  `stock_ledger`/`item_batches`. No warehouse-switcher UI yet — same reasoning as Phase 20's branch
+  rollout: schema plumbing first, UI once a second warehouse is actually needed.
+- `parties.type` gains a third value, `'both'` — one party can be billed as a customer and paid as
+  a vendor without a full party-role-table rewrite. `PartyMaster.jsx`'s type dropdown gets the new
+  option. Made **actually usable**, not just a stored value: `post_invoice()`'s and
+  `post_customer_advance()`'s party-type checks (`type = v_expected_party_type` / `type = 'customer'`)
+  are loosened to `type in (v_expected_party_type, 'both')` / `type in ('customer', 'both')` — the
+  only change in either function, otherwise byte-for-byte identical to Phase 27's versions.
+- Tested live with a throwaway `'both'`-type party: posted a sales invoice against it (allowed,
+  correct GST split) and posted a customer advance against it (allowed) — proving `'both'` actually
+  works both ways, not just that the constraint accepts the value. Negative control: a plain
+  `vendor`-type party was correctly still rejected for a sales invoice, confirming the widened check
+  didn't loosen the customer/vendor distinction itself. Confirmed the branch-warehouse backfill ran
+  (the one existing branch got exactly one default warehouse). Full cleanup afterward; `trial_balance()`
+  back to 0 = 0, `parties`/`chart_of_accounts` back to their pre-test counts.
+- **A new residue-cleanup wrinkle, not seen in earlier phases' cleanup**: deleting the throwaway
+  auth user failed ("Database error deleting user") because this phase's `audit_log` (Phase 14) had
+  recorded the test party's insert, and `audit_log.changed_by_user`'s foreign key blocked the
+  cascade. Fixed by deleting the `audit_log` rows filtered by that exact `changed_by_user` id first —
+  safe and unambiguous (only this throwaway user could match), unlike the table-name-based filter
+  Phases 21/23 got burned by. Worth remembering for any future phase whose test user performs a
+  write that `audit_log` tracks.
+- **Explicitly deferred**: the fully generalized `party_roles`/`party_contacts`/`party_addresses`/
+  `party_tax_registrations` model from `UPDATE.md` §16. `parties` already carries GSTIN, state code,
+  phone, and both addresses directly (Phase 22) — splitting these into separate tables is a real
+  refactor with no concrete gap forcing it yet.
+
+### Phase 29 — Sales Enhancements: Manual Credit/Debit Notes & AR Statements ✅
+- Today, `credit_notes` are only auto-issued on mid-period invoice cancellation, at most one per
+  invoice. New: a manual, **partial, quantity-based** credit/debit note flow (line-by-line, not just
+  a lump-sum), reusing the existing `sales_credit_note`/`purchase_debit_note` `invoice_type` values.
+  `credit_notes.invoice_id` uniqueness is dropped (replaced with a plain index) so multiple notes can
+  exist against one invoice over time; a `reason` text column and a `credit_notes_totals_consistent`
+  check (mirroring `invoices`' own header-must-equal-sum-of-lines rule) are added.
+- New `credit_note_line_items` table + `post_manual_credit_debit_note(invoice_id, reason,
+  line_adjustments)`: each adjusted line's tax is computed by **proportionally scaling that line's own
+  already-posted taxable_value/cgst/sgst/igst** by (adjusted qty / original qty) — deliberately never
+  by re-resolving today's `tax_rate` or recomputing the same/different-state split from scratch, since
+  CLAUDE.md §3 requires a posted invoice's historical tax amounts to never silently drift if a rate
+  changes later; scaling the original line's own recorded amounts is the only way to guarantee the
+  note always agrees with what that invoice actually posted. Guards against over-adjusting past a
+  line's remaining (original minus already-adjusted-by-prior-notes) quantity, same discipline as
+  `post_payment()`'s balance check. Purchase-side reversal correctly routes through the same account
+  `post_invoice()`'s Phase 10 split used per line (`raw_material_inventory` for a raw-material line,
+  otherwise the invoice's picked expense account) — verified live, not just assumed.
+- **Known, deliberate limitation**: does not reverse `stock_ledger` quantities, `items.average_cost`,
+  or the Phase 10 COGS/finished-goods-inventory posting for the returned quantity. A partial physical
+  return still needs a separate manual stock adjustment for now — correctly unwinding weighted-average
+  costing for a *partial* quantity (with possibly other purchases/consumption since) is a meaningfully
+  bigger, riskier problem than the financial correction built here, and only `cancel_invoice()`'s
+  100%-only reversal handles that today.
+- **Real bug caught and fixed before this was reported done**: `invoice_payment_status` — read by both
+  the Phase 27 AR/AP aging report and this phase's own Paid/Partially Paid label — only ever summed
+  `payments` and applied `customer_advances`. A partial note leaves the invoice `status='posted'`
+  (unlike full cancellation, which flips to `'cancelled'` and drops out of the view's filter
+  entirely), so without a fix, a partially-credited invoice would silently show its full original
+  balance due in both places. Fixed by folding `sum(credit_notes.grand_total)` into the view the same
+  way advances already are.
+- `InvoiceDetail.jsx` now lists every note against an invoice (was `.maybeSingle()`, assuming at most
+  one) and gained a "New Credit/Debit Note" form (`CreditDebitNoteForm.jsx`): per-line checkbox +
+  quantity, remaining-quantity shown per line (client-side guidance only — the RPC re-validates
+  authoritatively). `InvoiceList.jsx` shows a Paid/Partially Paid/Unpaid label next to the real
+  posted/cancelled status — no fabricated "Overdue" state, since there's no due-date field to base
+  one on (same honesty call as Phase 27's aging buckets).
+- **Explicitly deferred**: a flat price-only adjustment with no quantity change (UPDATE.md §18 also
+  asks for this) — out of scope for what was actually requested here (partial *line-item* notes); a
+  separate `sales_orders` stage ahead of invoicing, since `quotes` (Phase 21) already fills that role.
+- Tested live end-to-end with throwaway data: posted a sales invoice (10 units, 18% same-state),
+  issued a partial credit note for 3 units and confirmed its subtotal/CGST/SGST/grand_total were
+  exactly 3/10 of the original line's amounts, confirmed the journal entries balance and hit the
+  right accounts, confirmed `invoice_payment_status.balance_due` and `ar_ap_aging()` both reflected
+  the reduced balance, confirmed over-crediting the remaining 7 units by asking for 8 was rejected
+  with a clear message, and posted a purchase invoice against a raw-material item, issued a debit
+  note against it, and confirmed the reversal credited `raw_material_inventory` (not the picked
+  expense account) for exactly the adjusted proportion, balancing exactly. Full cleanup afterward
+  (including `stock_ledger`/`item_batches` rows the raw-material purchase created, and `audit_log`
+  rows per the Phase 28 lesson) — `trial_balance()` back to 0 = 0.
+
+### Phase 30 — Cloud Kitchen: Wastage & Delivery Settlement ✅
+- **Confirmed with the user before building**: this business genuinely takes Swiggy/Zomato-style
+  delivery-platform orders alongside a physical store, each order gets its own sales invoice (same as
+  any other sale), and a settlement should link to the specific invoices it covers — so this phase
+  was built as real, needed functionality, not speculatively.
+- New `wastage` table (item, quantity, reason, branch, date, cost) + `post_wastage()`: reuses
+  `consume_item_fefo()` (Phase 10) for the actual stock consumption and cost basis — the same
+  mechanism a sale or production entry already uses, never a second stock-reduction implementation.
+  Always posts the expense (not "where configured" — silently skipping it would understate a real
+  cost, which CLAUDE.md §5's minimalism carve-outs explicitly except).
+- Two new system accounts: `wastage_expense`, `platform_commission_expense` (both `expense`), added
+  to `seed_system_accounts()` and backfilled for the existing company — 16 system accounts total now.
+- New `delivery_platforms` (Swiggy, Zomato — not "in-store," which settles immediately with no
+  commission and uses the existing `post_payment()` flow unchanged), `delivery_settlements`, and a
+  `delivery_settlement_invoices` join table linking a settlement to the specific order invoices it
+  covers. `gross_order_value` is **derived** from the linked invoices' own `grand_total` — never typed
+  by hand — the same "never let two independently-entered numbers drift" discipline invoices/credit
+  notes already apply to their own headers.
+- `post_delivery_settlement(platform_id, date, invoice_ids[], commission, other_fees, bank_account_id)`
+  posts `Dr Bank (net) + Dr Platform Commission Expense (commission+fees) = Cr Accounts Receivable
+  (gross)` — clearing those invoices' AR in one batch, same `accounts_receivable` system account
+  regular invoices already use. Guards against including an invoice that isn't a posted sales invoice,
+  has already had a payment/credit note recorded against it, or is already in another settlement.
+- **Flagged, not verified**: the commission/other_fees breakdown is a reasonable generic accounting
+  model, not checked against a real Swiggy/Zomato payout statement — worth confirming the categories
+  match once a real settlement statement is on hand (may itemize customer/platform discounts
+  separately rather than folding everything into "commission").
+- **Explicitly deferred**: a unified multi-source order engine (POS/website/CSV adapters) from
+  `UPDATE.md` §12 — orders still get invoiced through the existing `post_invoice()` regardless of
+  channel; only the platform-specific payout economics needed new tracking, not a new order pipeline.
+- Tested live end-to-end with throwaway data: purchased 20kg of a raw material, wasted 5kg, confirmed
+  the cost (5 × the item's own average cost) matched exactly, confirmed the journal balanced and
+  correctly reduced `raw_material_inventory`, confirmed remaining stock was exactly 15kg, and
+  confirmed wasting more than what's in stock was rejected with a clear message. Posted two sales
+  invoices (₹590, ₹354), settled both together with ₹100 commission + ₹20 fees, confirmed the derived
+  gross (₹944) and net (₹824) were exactly right and the journal balanced; confirmed re-settling an
+  already-settled invoice was rejected, and confirmed settling an invoice that already had a payment
+  recorded against it was also rejected. Full cleanup afterward (including `stock_ledger`/
+  `item_batches` residue and `audit_log` rows per the Phase 28/29 lessons) — `trial_balance()` back to
+  0 = 0, `chart_of_accounts` back to exactly 16 rows.
+
+### Phase 31 — Consulting Module (major new module, genuinely additive) ✅
+- New `projects` (client = existing `parties.id`, project code, PM = `employees.id`, start/end
+  date, budget, status, billing method, reference billing rate, cost centre), `project_tasks`,
+  `timesheets` (employee, date, project, task, hours, billable, billing rate, cost rate, approval
+  status, `invoice_id` once billed), and `project_expenses` tables. A consulting client is just a
+  party with `type = 'customer'`/`'both'` — no separate `clients` master, reusing Phase 22's party
+  model rather than duplicating it. `project_expenses` is deliberately reporting-only (profitability
+  cost tracking), not a ledger posting — a real vendor payment for the project still goes through
+  Purchase Invoices as usual, same reasoning already applied to wastage/delivery-settlement design
+  choices in Phase 30.
+- `post_project_invoice(project_id, date, item_id, revenue_account_id, timesheet_ids[])` reuses
+  `post_invoice()` directly (same pattern `convert_quote_to_invoice()` already established): groups
+  the selected approved/billable/not-yet-invoiced timesheets by `billing_rate` into one line item per
+  rate, calls `post_invoice()` for the actual GST/ledger posting, and marks those timesheets invoiced
+  in the same transaction — a failure rolls back both together. No parallel billing/tax path.
+- `project_profitability()`: revenue is the *distinct* invoiced project invoices' own `subtotal`
+  (pre-tax — GST collected isn't revenue), never joined row-by-row through `invoice_line_items` (which
+  would overcount whenever an invoice has more than one rate-grouped line). Labour cost counts *all*
+  timesheets, billable or not, at their own `cost_rate` — an unbilled internal hour still costs the
+  business.
+- **Explicitly deferred**: indirect/overhead cost allocation across projects (`UPDATE.md` §21 lists
+  it as optional — "if configured"). Direct cost (labour + expenses) is enough to start; allocation
+  rules are a judgment call worth a CA's input before building, per CLAUDE.md §8. Also deferred: fixed-
+  fee/milestone invoicing through this module — `billing_method: 'fixed'` is trackable as metadata,
+  but the only invoicing mechanism actually built is hourly-from-timesheets; a fixed-fee project still
+  invoices normally through Sales Invoices.
+- Tested live end-to-end with throwaway data: logged 4 timesheet entries on one project (5h/₹1000
+  approved, 3h/₹1000 pending, 2h/₹1500 approved, 4h non-billable) plus a ₹2,000 project expense.
+  Confirmed invoicing a pending timesheet was rejected, invoicing the non-billable one was rejected,
+  then invoiced the two approved+billable entries together and confirmed the result was exactly 2 line
+  items (one per rate) with subtotal ₹8,000 and grand total ₹9,440 (18% same-state). Confirmed
+  re-invoicing an already-invoiced timesheet was rejected. Confirmed `project_profitability()` returned
+  revenue ₹8,000, labour cost ₹6,000 (computed across *all four* timesheets including the non-billable
+  one), expense cost ₹2,000, and therefore profit exactly ₹0 — matching hand-calculated expectations
+  precisely. Full cleanup afterward, including fixing an FK-ordering mistake in the cleanup script
+  itself (tried deleting the invoice before the timesheets referencing it) — `trial_balance()` back to
+  0 = 0, `chart_of_accounts`/`parties` back to their pre-test counts.
+
+### Phase 32 — Tax & CA: TDS Tracking + Expanded CA Package
+- New `tds_rates` (section, rate, effective_from/to — same effective-dated-table pattern as
+  `tax_rates`, never a hardcoded percentage) and `tds_transactions` (payee = `parties.id`, payment
+  reference, section, taxable base, tds_amount, deposited_on) tables — a record-keeping ledger
+  alongside the existing purchase-payment flow.
+- New system liability account `tds_payable`, posted as one additional optional leg inside the
+  existing `post_payment()` purchase-payment path (`Dr Vendor Payable / Cr Bank, Cr TDS Payable`)
+  when a TDS deduction is recorded — an additive leg, not a rewrite of that function's balancing
+  logic.
+- CA package (Phase 19) gains the exports `UPDATE.md` §28 lists that don't exist yet: AR/AP aging
+  (Phase 27), TDS summary, fixed-asset register/depreciation (Phase 33). Reports Phase 19 already
+  produces aren't rebuilt.
+- **Explicitly deferred**: the generic `tax_jurisdictions`/`tax_regimes`/`tax_codes` abstraction from
+  `UPDATE.md` §26 replacing the direct `tax_rates`/`resolve_tax_rate()`/`calculate_gst_split()`
+  model — this business only ever needs Indian GST, so there's no second jurisdiction to justify
+  the abstraction; the existing model already satisfies every rule in CLAUDE.md §3.
+- **Explicitly deferred**: a Tally XML export layer (`UPDATE.md` §29) — large and genuinely new;
+  revisit once this phase's own new exports exist and it's clear what a CA actually needs mapped.
+
+### Phase 33 — Banking Enhancements & Fixed Assets
+- New `bank_accounts` table (today "the bank" is really just a chart-of-accounts asset row with no
+  dedicated identity) — company_id, branch_id, account name/number (masked in the UI), linked
+  `chart_of_accounts` row. `payments`/`bank_transactions` gain a nullable `bank_account_id` — the
+  existing rows and account references keep working unchanged.
+- Multiple bank/cash accounts, plus CSV/Excel statement import alongside the existing PDF import
+  (Phase 25) — same "parse client-side, never auto-import flagged/duplicate rows" design already
+  established there.
+- New `asset_categories`/`fixed_assets`/`asset_transactions`/`depreciation_runs` tables —
+  capitalization, disposal, and a scheduled depreciation run posting `Dr Depreciation Expense / Cr
+  Accumulated Depreciation` using the existing journal-posting pattern (one new SECURITY DEFINER
+  function, not a change to how posting already works).
+- **Explicitly deferred**: the full generalized `bank_reconciliations`/`bank_reconciliation_lines`
+  model from `UPDATE.md` §30–31 replacing today's single `matched_payment_id` column — Phase 17's
+  auto-suggest matching already covers this business's actual reconciliation need; revisit only if
+  multiple bank accounts (above) make the single-match-column model genuinely insufficient.
+
+### Phase 34 — HR Foundations & Payroll Enhancements
+- New `departments`/`designations` tables; `employees` gains nullable `department_id`/
+  `designation_id` — additive columns, existing employee rows unaffected.
+- New `attendance`/`leave` tables (date-based, per employee) feeding the existing payroll run as
+  additional recorded inputs — the run itself still produces the same fixed-gross-plus-manual-
+  deductions payslip it does today; attendance/leave are recorded for reporting, not yet wired into
+  automatic salary calculation.
+- **Explicitly deferred**: the full configurable salary-component engine and statutory-calculation
+  rebuild from `UPDATE.md` §24–25. Today's "fixed gross + manually-entered deductions" already lets
+  a human enter the correct PF/ESI/professional-tax amount each month (with a CA's review, per
+  CLAUDE.md §8), and building a generalized rules engine before a second, structurally different
+  payroll case actually exists would be speculative, against CLAUDE.md §5. Revisit if statutory
+  rates change often enough that manual entry becomes the real pain point.
+
+### Phase 35 — R&D Generalization
+- `rnd_trials` (Phase 10) already covers food-product recipe trials. Add an `rnd_project_type`
+  (food/consulting/process/internal) column and optional `budget`/`external_services_cost` fields to
+  the existing table, rather than introducing a parallel `rnd_projects`/`rnd_experiments`/
+  `rnd_materials`/`rnd_labor` table set — the existing trial+consumption model already captures
+  materials cost per trial; this phase only widens what a trial can represent.
+- **Explicitly deferred**: dedicated R&D document/results attachment storage — folds into Phase 36's
+  generic attachments instead of a separate R&D-only table.
+
+### Phase 36 — Generic Document Attachments & Expanded Audit Log
+- New `attachments` table (entity_type, entity_id, file_name, file_path, mime_type, uploaded_by,
+  company_id) backed by Supabase Storage with permission-checked signed downloads (never a public
+  bucket) — one generic mechanism used by invoices, purchase bills, expenses, R&D trials, fixed
+  assets, and bank reconciliations, rather than a bespoke upload field per module.
+- `audit_log` (Phase 14) already covers master-data edits. Extend the audited event set to the
+  login/logout and period-close/reopen events `UPDATE.md` §35 asks for, reusing the existing table
+  rather than a parallel logging system.
+
+### Phase 37 — Management Dashboard Expansion
+- Extend the existing dashboard with the Kitchen/Consulting/People/Compliance tiles from
+  `UPDATE.md` §41 that have real underlying data by this point (food cost %, wastage %, project
+  margin, unbilled hours, GST/TDS/payroll review status) — a read-only aggregation layer over
+  reports already built in the phases above, no new posting logic. Deliberately last, per
+  `UPDATE.md` §51's own priority order: "do not prioritize visual redesign above accounting
+  correctness."
+
+Only the items below remain after Phase 37, and only if the business's shape changes.
 
 ### Later (not in current scope)
 - Multi-branch UI: branch switcher and consolidated multi-branch reports. Phase 20 makes the
@@ -520,17 +874,17 @@ Only the items below remain after Phase 25, and only if the business's shape cha
   a paid API/portal integration
 - Multi-currency, multi-company, connected/online banking, WhatsApp integration — enterprise-scale,
   not needed at this business's scale
-- Godown/warehouse management, cheque clearing/bounce lifecycle, serial-number tracking, job-costing
-  beyond the lightweight tag in Phase 11 — skip unless the business's shape changes (multiple
-  locations, heavy cheque usage, etc.)
+- Cheque clearing/bounce lifecycle, serial-number tracking, job-costing beyond the lightweight tag
+  in Phase 11 — skip unless the business's shape changes (heavy cheque usage, etc.)
 
 ## 6. Infrastructure / Platform Checkpoints (time-sensitive)
-- [ ] **Before October 30, 2026**: Supabase is requiring explicit Postgres grants for
-      PostgREST/Data-API access on free-tier projects from that date. Since this app talks to
-      Supabase entirely through `supabase-js` (which goes through PostgREST), check the Supabase
-      dashboard for whether this project needs the grants added, and add them ahead of the
-      deadline — otherwise the API can stop serving requests. A settings check, not development
-      work — doesn't need to wait for the phase order above.
+- [x] **Checked 2026-09-05, before October 30, 2026**: resolved — this is not a dashboard setting.
+      Existing tables (everything through Phase 25) keep their current implicit grants and stay
+      reachable via PostgREST/the Data API indefinitely; nothing needs to change for them. The rule
+      only applies to tables *created* on or after October 30, 2026 — those need explicit
+      `grant select, insert, update, delete on <table> to authenticated; grant all on <table> to
+      service_role;` statements in `schema.sql`, or PostgREST won't expose them. Phase 26 above
+      adopts that as standing practice for every `create table` from here on.
 
 ## 7. Compliance Checkpoints (do not skip)
 - [ ] Have a CA review the chart of accounts after Week 1
