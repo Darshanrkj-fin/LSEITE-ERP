@@ -21,10 +21,10 @@ CA rather than decided in code).
 | Layer | Choice | Notes |
 |---|---|---|
 | Frontend | React + Vite + Tailwind CSS | No component/icon library — hand-built |
-| Backend | Cloudflare Pages Functions (Workers runtime, ESM) | Thin — most logic lives in Postgres |
+| Backend | A single Cloudflare Worker with static assets | One deployable — `worker.js` dispatches `/api/*` to the route modules under `functions/api/`, and serves everything else from the built frontend via the `[assets]` binding |
 | Database | Supabase (Postgres + Auth + Row-Level Security) | Free tier |
 | PDF generation | `pdf-lib` | Invoices, payslips, quotes, report exports |
-| Scheduled jobs | A companion Cloudflare Worker with Cron Triggers | Pings the GST-notification-checker and subscription-cycle-generator Functions on schedule — Pages Functions can't be triggered by Cron Triggers directly, so this tiny Worker (`cron-worker/`) is a separate deploy whose only job is the trigger |
+| Scheduled jobs | The same Worker's own Cron Triggers | `worker.js`'s `scheduled()` handler runs the GST-notification-checker/subscription-cycle-generator routes directly on schedule — no separate deployment |
 | Email | Resend | Only the invoice "Email PDF" action |
 
 No paid APIs, no ORM — plain `@supabase/supabase-js` queries and Postgres RPC calls. Almost all
@@ -36,9 +36,10 @@ deferred trigger rejects any transaction where debits ≠ credits within the sam
 ## Project structure
 
 ```
+worker.js             The Worker's entry point — routes /api/* to functions/api/, serves assets otherwise
 src/                  React frontend (pages, components, contexts, lib helpers)
-functions/api/        Cloudflare Pages Functions (PDF generation, email, cron endpoints, user admin)
-cron-worker/          A separate, tiny Cloudflare Worker that triggers the two cron endpoints above
+functions/api/        Route modules (PDF generation, email, cron endpoints, user admin) — plain
+                      exported functions, dispatched to by worker.js (not Pages' file-based routing)
 lib/                  Shared backend helpers used by functions/ and scripts/
 scripts/              One-off Node scripts (e.g. manage-user.js)
 supabase/schema.sql   The full database schema — single source of truth, applied top to bottom
@@ -64,7 +65,7 @@ cp .env.example .env
 ```
 - `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` — from your Supabase project settings.
 - `SUPABASE_SERVICE_ROLE_KEY` — **server-side only**, never exposed to the frontend. Used by `functions/api/*.js` and `scripts/*.js`.
-- `CRON_SECRET` — a random string; the companion `cron-worker/` sends it as a bearer token so these two endpoints can verify the caller. Set the same value in both places (see Deployment below).
+- `CRON_SECRET` — a random string; `worker.js`'s `scheduled()` handler sends it as a bearer token to the two cron routes, so they can verify the call actually came from the platform's own scheduler and not a public request.
 - `RESEND_API_KEY` / `GST_ALERT_FROM_EMAIL` — only needed for the "Email PDF" action on invoices.
 - `GST_NOTIFICATION_SOURCE_URL` — the page the GST-notification checker watches for changes.
 
@@ -80,45 +81,42 @@ see `handle_new_auth_user()` / `bootstrap_company()` in the schema for details.
 ```bash
 npm run dev
 ```
-This runs the frontend standalone via Vite; `functions/api/*.js` isn't served this way. To exercise
-the Functions locally too, use:
+This runs the frontend standalone via Vite; `/api/*` isn't served this way. To exercise the Worker
+locally too (routes + static assets together, exactly as Cloudflare serves them in production), use:
 ```bash
 npm run cf:dev
 ```
-which runs `wrangler pages dev` proxying to the Vite dev server, serving `functions/api/*` exactly
-as Cloudflare would in production (reads env vars from your `.env` automatically).
+which builds the frontend, then runs `wrangler dev` (reads env vars from your `.env` automatically).
 
 ## Available scripts
 
 | Command | Purpose |
 |---|---|
 | `npm run dev` | Start the Vite dev server (frontend only) |
-| `npm run cf:dev` | Frontend + `functions/api/*` together, via `wrangler pages dev` |
+| `npm run cf:dev` | Build, then run the whole Worker locally via `wrangler dev` |
 | `npm run build` | Production build |
-| `npm run cf:deploy` | Build, then deploy to Cloudflare Pages (`wrangler pages deploy`) |
+| `npm run cf:deploy` | Build, then deploy (`wrangler deploy`) |
 | `npm run preview` | Preview a production build locally |
 | `npm run lint` | Run `oxlint` |
 
 ## Deployment
 
-Deployed as a static frontend + Cloudflare Pages Functions, both from this one repo. Client-side
-routing (React Router) works with zero extra config — classic Cloudflare Pages serves `index.html`
-for any path that doesn't match a real file or a Function, as long as there's no top-level
-`404.html`. `functions/api/*.js` map directly to `/api/*` URLs, the same paths the Vercel functions
-used to serve, so nothing on the frontend needed to change.
+Deployed as a single Cloudflare Worker: `worker.js` is the entry point, `[assets]` in `wrangler.toml`
+points at the built `dist/` directory with `not_found_handling = "single-page-application"` (the SPA
+fallback for client-side routing), and `functions/api/*.js` are dispatched to by path from
+`worker.js` rather than relying on Cloudflare Pages' file-based routing. `/api/*` URLs are unchanged
+from the old Vercel setup, so nothing on the frontend needed to change.
 
-1. **Deploy the main app**: connect this repo in the Cloudflare dashboard (Workers & Pages → Create
-   → Pages), or run `npm run cf:deploy` from the CLI. Build command `npm run build`, output
-   directory `dist`. Set every variable from `.env` in the project's Settings → Environment
-   variables — `SUPABASE_SERVICE_ROLE_KEY` and `CRON_SECRET` must never be prefixed `NEXT_PUBLIC_`
-   or otherwise exposed to the client bundle (only `NEXT_PUBLIC_SUPABASE_URL` /
-   `NEXT_PUBLIC_SUPABASE_ANON_KEY` are meant to reach the browser — see `vite.config.js`'s
-   `envPrefix`).
-2. **Deploy the cron trigger**: from `cron-worker/`, run `wrangler deploy`. Set
-   `PAGES_URL` in `cron-worker/wrangler.toml` to your deployed Pages URL, and set the Worker's own
-   `CRON_SECRET` secret (`wrangler secret put CRON_SECRET`, run from inside `cron-worker/`) to the
-   **exact same value** as the Pages project's `CRON_SECRET` env var — that's what lets the Pages
-   Functions verify the call actually came from the scheduled Worker and not the public internet.
+1. **Log in once**: `npx wrangler login`.
+2. **Deploy**: `npm run cf:deploy` (builds, then `wrangler deploy`).
+3. **Set environment variables**: Cloudflare dashboard → Workers & Pages → this project → Settings
+   → Variables and Secrets. Add every value from `.env` — mark `SUPABASE_SERVICE_ROLE_KEY`,
+   `CRON_SECRET`, and `RESEND_API_KEY` as **secrets**, not plain text. Only `NEXT_PUBLIC_SUPABASE_URL`
+   / `NEXT_PUBLIC_SUPABASE_ANON_KEY` are meant to reach the browser (see `vite.config.js`'s
+   `envPrefix`) — everything else stays server-side. Redeploy once after adding them.
+4. **Cron Triggers** are configured in `wrangler.toml` (`[triggers]`) and take effect automatically
+   on deploy — no separate setup. You can trigger them manually to verify without waiting for the
+   real schedule: `curl -X POST https://<your-worker-url>/api/check-gst-notifications -H "Authorization: Bearer <CRON_SECRET>"`.
 
 ## Further reading
 

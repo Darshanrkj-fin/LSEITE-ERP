@@ -1,16 +1,25 @@
 name = "lseite-erp"
-pages_build_output_dir = "dist"
+main = "worker.js"
 compatibility_date = "2026-09-05"
 
-# No nodejs_compat flag needed — functions/api/*.js were written against
-# the Workers runtime's own Web APIs (fetch, Response, crypto.subtle,
-# btoa) rather than Node's Buffer/crypto module, so there's nothing here
-# that needs the Node compatibility shim.
+# No nodejs_compat flag needed — functions/api/*.js and worker.js were
+# written against the Workers runtime's own Web APIs (fetch, Response,
+# crypto.subtle, btoa) rather than Node's Buffer/crypto module, so there's
+# nothing here that needs the Node compatibility shim.
 
-# Observability (Logs/Traces) is NOT configurable here for a classic Pages
-# project — `wrangler pages deploy` rejects an [observability] block
-# outright ("Configuration file for Pages projects does not support
-# observability"), even though the dashboard's own "sync your config"
-# banner suggests one. Toggle Logs/Traces directly in the dashboard
-# (Settings > Observability) instead — that's a runtime setting for this
-# project type, not something wrangler.toml manages.
+# Static assets (the built Vite frontend). not_found_handling routes any
+# unmatched path to index.html with a 200 — the SPA fallback, equivalent
+# to what a classic Pages project gives you for free. worker.js's fetch()
+# only reaches env.ASSETS.fetch() for paths that aren't one of the /api/*
+# routes it dispatches itself.
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+# Cron Triggers run directly on this Worker's own scheduled() handler
+# (see worker.js) — no separate companion Worker needed, unlike a classic
+# Pages project (Pages Functions can't be triggered by Cron Triggers at
+# all). Same two schedules the old vercel.json crons used.
+[triggers]
+crons = ["0 6 * * 1", "0 5 * * *"]

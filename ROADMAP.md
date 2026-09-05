@@ -34,12 +34,12 @@ changes.
 ## 1. Tech Stack (all free-tier)
 | Layer | Choice | Why |
 |---|---|---|
-| Frontend | React + Tailwind, hosted on Cloudflare Pages | Free, no cold starts |
-| Backend | Cloudflare Pages Functions (Workers runtime) | Same platform as frontend, free tier |
+| Frontend | React + Tailwind, hosted on a Cloudflare Worker (static assets) | Free, no cold starts |
+| Backend | The same Cloudflare Worker (`worker.js` dispatches `/api/*`) | Same platform as frontend, free tier |
 | Database | Supabase (Postgres) | Free tier, built-in Auth |
 | Auth | Supabase Auth | Multi-user ready from day 1 |
 | PDF generation | `pdf-lib` | Free, open-source, already in use |
-| Scheduled jobs | A companion Cloudflare Worker with Cron Triggers (free tier) | Pages Functions can't be triggered by Cron Triggers directly, so a tiny separate Worker (`cron-worker/`) pings the GST notification checker and subscription cycle generator on schedule |
+| Scheduled jobs | The Worker's own Cron Triggers (free tier) | `worker.js`'s `scheduled()` handler runs the GST notification checker and subscription cycle generator directly — no separate deployment |
 | Email | Resend (free tier) | Used only for the invoice "Email PDF" action (GST alerts moved to an in-app notification bell) |
 | GST calculation | Custom logic (no external API) | Free, full control |
 
@@ -1057,6 +1057,40 @@ remain, and only if the business's shape changes.
       policy (the only one on this table) was dropped and recreated identically around the change
       as a precaution. Verified live: all 5 real user rows kept their correct role values, an invalid
       role value is now rejected structurally by the enum, and a normal update still succeeds.
+- [x] **2026-09-05 — Corrected the Cloudflare migration above: this account's "lseite-erp" project
+      turned out to be a plain Cloudflare Worker with a static-assets binding (the unified
+      Workers+assets model), not the classic Pages project everything above was built against.**
+      Symptoms that led to this: `wrangler pages deploy` reported "The project you specified does
+      not exist" for a project the dashboard clearly showed as live; the deployed URL was
+      `*.workers.dev`, not `*.pages.dev`; the dashboard showed "Bindings" and "Trigger events" tabs
+      (Worker-specific, not present on classic Pages); and `functions/api/*.js` were silently never
+      actually serving requests in production (confirmed by directly curling a live endpoint and
+      getting the SPA's HTML back instead of JSON) even though local `wrangler pages dev` testing
+      had looked correct throughout. Confirmed definitively via `wrangler deployments list --name
+      lseite-erp` succeeding against the Workers API.
+      - Replaced `wrangler.toml`'s `pages_build_output_dir` with `main = "worker.js"` +
+        `[assets] directory = "./dist"` + `not_found_handling = "single-page-application"` (the
+        Workers-with-assets equivalent of Pages' automatic SPA fallback).
+      - Added `worker.js`: a single entry point whose `fetch()` dispatches `/api/*` paths to the
+        exact same `functions/api/*.js` modules by calling their `onRequestGet`/`onRequestPost`/
+        `onRequest` exports directly (those files needed zero changes — they're just plain exported
+        functions either way), falling back to `env.ASSETS.fetch(request)` for everything else.
+      - **Removed `cron-worker/` entirely** — a real Worker can have `[triggers]` Cron Triggers
+        directly in its own `wrangler.toml`, so `worker.js`'s own `scheduled()` handler now runs the
+        two cron routes itself (building a synthetic authorized `Request` so the routes' own
+        `Authorization: Bearer <CRON_SECRET>` check doesn't need to be forked/duplicated). Simpler
+        than the previous two-deployable design, not just a fix — one project to manage, one set of
+        secrets, no separate companion deploy pipeline.
+      - `package.json`'s `cf:dev`/`cf:deploy` scripts now call plain `wrangler dev`/`wrangler deploy`
+        instead of the `pages` subcommands.
+      - Verified live via `wrangler dev`: rebuilt `dist/`, confirmed all `/api/*` routes return
+        correct status codes/bodies, confirmed the SPA fallback serves the app shell on a deep route,
+        and confirmed the scheduled handler runs correctly via wrangler's local
+        `/cdn-cgi/local/scheduled` trigger endpoint — which, since it used the real `.env` Supabase
+        credentials, actually exercised the real check-gst-notifications/generate-subscription-cycles
+        logic against the live database; confirmed via direct query that this inserted one harmless,
+        correctly-shaped `gst_notification_log` row (exactly its normal periodic behavior) and created
+        no subscription cycles (0 active subscriptions existed at the time) — no cleanup needed.
 - [x] **2026-09-05 — Manage Users page can now change role/can_manage_users directly** (previously
       Supabase Table Editor-only). New `update_user_role(p_user_id, p_role, p_can_manage_users)`
       RPC — `users` still has no client-side UPDATE policy, so this SECURITY DEFINER function is the

@@ -5,7 +5,7 @@ This file guides Claude Code while building this software. Read `ROADMAP.md` fir
 ## 1. Project Identity
 This is a GST-compliant company finance system: invoicing, inventory, bank reconciliation, core accounting reports, payroll, and GST summary reports. It is for one company's internal use (multi-branch ready in schema, not in active use yet).
 
-Stack: React + Tailwind (frontend), Cloudflare Pages Functions (backend), Supabase/Postgres (database + auth). No other services. No paid APIs anywhere in current scope.
+Stack: React + Tailwind (frontend), a Cloudflare Worker with static assets (backend), Supabase/Postgres (database + auth). No other services. No paid APIs anywhere in current scope.
 
 ## 2. Stay on the Roadmap
 - Always check `ROADMAP.md` before starting new work. Build phases **in order** — do not jump ahead to Payroll or GST alerts before Invoicing, Inventory, and Reports are working.
