@@ -44,6 +44,8 @@ import { PartyStatement } from './pages/PartyStatement'
 import { Wastage } from './pages/Wastage'
 import { DeliverySettlements } from './pages/DeliverySettlements'
 import { Projects } from './pages/Projects'
+import { TdsRates } from './pages/TdsRates'
+import { TdsSummary } from './pages/TdsSummary'
 
 function App() {
   return (
@@ -96,6 +98,8 @@ function App() {
         <Route path="/wastage" element={<Wastage />} />
         <Route path="/delivery-settlements" element={<DeliverySettlements />} />
         <Route path="/projects/*" element={<Projects />} />
+        <Route path="/tds-rates" element={<TdsRates />} />
+        <Route path="/tds-summary" element={<TdsSummary />} />
         <Route path="/change-password" element={<ChangePassword />} />
         <Route path="/manage-users" element={<ManageUsers />} />
       </Route>

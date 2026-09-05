@@ -15,16 +15,17 @@ A cloud-hosted accounting system for a single company (multi-branch ready) that 
   produced as finished goods)
 - Subscriptions: recurring customer plans with variable items per cycle (not a fixed box)
 
-Every phase through Phase 31 is **built and live-tested** — see section 5 for Phases 1–19, section
+Every phase through Phase 32 is **built and live-tested** — see section 5 for Phases 1–19, section
 5b for Phases 20–24 (multi-branch schema readiness, quote management, expanded customer fields,
 advance/deposit payments, and a cohesive visual design system, drawn from a follow-up gap review),
 Phase 25 (bank statement PDF import, added outside the original phase plan at user request), and
-section 5d for Phases 26–31 (repo/platform hygiene, accounting period locking, AR/AP aging, party
+section 5d for Phases 26–32 (repo/platform hygiene, accounting period locking, AR/AP aging, party
 statements, units/warehouses schema, flexible customer-and-vendor parties, partial credit/debit
-notes, wastage write-offs, Swiggy/Zomato delivery settlement reconciliation, and a full Consulting
-module with timesheet-based billing — the start of the `UPDATE.md` architecture review below).
+notes, wastage write-offs, Swiggy/Zomato delivery settlement reconciliation, a full Consulting
+module with timesheet-based billing, and TDS tracking — the start of the `UPDATE.md` architecture
+review below).
 
-Phases 32–37 (section 5d) are **planned, not yet built** — a mapping of `UPDATE.md`'s broader
+Phases 33–37 (section 5d) are **planned, not yet built** — a mapping of `UPDATE.md`'s broader
 architecture review (cloud kitchen + consulting as twin business lines, HR/payroll, TDS, fixed
 assets, Tally export, and more) onto this file's existing phase format, scoped additive-first per
 the decisions in section 5c. Only the "Later" items after section 5d remain fully out of scope, and
@@ -787,24 +788,52 @@ re-litigated per phase below:
   itself (tried deleting the invoice before the timesheets referencing it) — `trial_balance()` back to
   0 = 0, `chart_of_accounts`/`parties` back to their pre-test counts.
 
-### Phase 32 — Tax & CA: TDS Tracking + Expanded CA Package
+### Phase 32 — Tax & CA: TDS Tracking + Expanded CA Package ✅
 - New `tds_rates` (section, rate, effective_from/to — same effective-dated-table pattern as
-  `tax_rates`, never a hardcoded percentage) and `tds_transactions` (payee = `parties.id`, payment
-  reference, section, taxable base, tds_amount, deposited_on) tables — a record-keeping ledger
-  alongside the existing purchase-payment flow.
-- New system liability account `tds_payable`, posted as one additional optional leg inside the
-  existing `post_payment()` purchase-payment path (`Dr Vendor Payable / Cr Bank, Cr TDS Payable`)
-  when a TDS deduction is recorded — an additive leg, not a rewrite of that function's balancing
-  logic.
-- CA package (Phase 19) gains the exports `UPDATE.md` §28 lists that don't exist yet: AR/AP aging
-  (Phase 27), TDS summary, fixed-asset register/depreciation (Phase 33). Reports Phase 19 already
-  produces aren't rebuilt.
+  `tax_rates`, global not company-scoped, admin-only write) + `resolve_tds_rate()`, mirroring
+  `resolve_tax_rate()` exactly — never a hardcoded percentage. New `TdsRates.jsx` admin screen
+  (Setup nav), mirroring `TaxRates.jsx`.
+- New system liability account `tds_payable`. `post_payment()` gains one new optional param,
+  `p_tds_section` (purchase-invoice payments only): resolves the rate, computes the TDS amount on
+  the full payment amount, and posts `Dr Accounts Payable (full) = Cr Bank (net) + Cr TDS Payable
+  (deducted)` — the same "gross clears the payable, net hits the bank, the gap goes to a
+  liability/expense account" pattern Phase 30's delivery settlements already used. Records a
+  `tds_transactions` row (payee, section, base, rate, amount, nullable `deposited_on` for tracking
+  whether it's actually been paid to the government). `PaymentsSection.jsx` gets an optional TDS-
+  section field, shown only for purchase-invoice payments.
+- **Flagged, not decided, per CLAUDE.md §8**: TDS is computed on the *full payment amount* as a
+  simplification — some sections require excluding the GST component from the base, which needs a
+  CA's confirmation. Also out of scope: TDS *receivable* (a customer deducting TDS from what they
+  pay us) — only the payable side (what we deduct paying vendors) is built.
+- **Real gotcha caught before handoff**: adding a 7th parameter to `post_payment()` meant
+  `create or replace function` alone would NOT replace the existing 6-arg version — Postgres treats
+  a different declared arity as a new overload, which would have left both versions live and made
+  every future call ambiguous. Fixed by explicitly `drop function if exists` on the old 6-arg
+  signature before recreating it, and verified live (a 6-arg-shaped call after the fix resolved to
+  the one new function cleanly, no ambiguous-candidate error).
+- `cancel_payment()` updated: its existing generic per-leg reversal already correctly undoes a TDS
+  journal leg (it reverses whatever legs exist in the entry group, regardless of what they are) —
+  but it now also deletes the associated `tds_transactions` row, so a TDS summary doesn't keep
+  showing a deduction that was reversed.
+- New `tds_summary()` report + `TdsSummary.jsx` (Reports nav, CSV/PDF export, FY quick-select —
+  matching every report since Phase 19) — this is the Phase-32 piece of "expanded CA package."
+  AR/AP aging already got its own export in Phase 27; fixed-asset register is Phase 33, not this one.
 - **Explicitly deferred**: the generic `tax_jurisdictions`/`tax_regimes`/`tax_codes` abstraction from
   `UPDATE.md` §26 replacing the direct `tax_rates`/`resolve_tax_rate()`/`calculate_gst_split()`
   model — this business only ever needs Indian GST, so there's no second jurisdiction to justify
   the abstraction; the existing model already satisfies every rule in CLAUDE.md §3.
 - **Explicitly deferred**: a Tally XML export layer (`UPDATE.md` §29) — large and genuinely new;
   revisit once this phase's own new exports exist and it's clear what a CA actually needs mapped.
+- Tested live end-to-end with throwaway data: posted a ₹11,800 purchase invoice, paid ₹10,000 of it
+  with a 194J/10% TDS deduction, and confirmed the `tds_transactions` row (base 10,000, rate 10,
+  amount 1,000) and the journal legs exactly — AP debited 10,000, Bank credited 9,000 (net), TDS
+  Payable credited 1,000, balancing exactly. Confirmed `tds_summary()` included the deduction.
+  Confirmed attempting TDS on a sales-invoice payment was rejected. Cancelled the payment and
+  confirmed the `tds_transactions` row was removed and the 3-leg reversal balanced exactly. Full
+  cleanup afterward — caught and fixed one residue mistake in the cleanup script itself (forgot to
+  delete a test sales invoice's own journal entries, briefly leaving `trial_balance()` at
+  ₹1,180 ≠ 0 and blocking a chart-of-accounts deletion) — `trial_balance()` back to 0 = 0,
+  `chart_of_accounts` back to 17 rows.
 
 ### Phase 33 — Banking Enhancements & Fixed Assets
 - New `bank_accounts` table (today "the bank" is really just a chart-of-accounts asset row with no

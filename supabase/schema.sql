@@ -108,13 +108,14 @@ create table public.chart_of_accounts (
       'raw_material_inventory', 'finished_goods_inventory',
       'cost_of_goods_sold', 'rnd_expense',
       'customer_advances',
-      'wastage_expense', 'platform_commission_expense'
+      'wastage_expense', 'platform_commission_expense',
+      'tds_payable'
     )
   ),
   constraint coa_system_role_type_consistency check (
     system_role is null
     or (system_role in ('accounts_receivable', 'input_cgst', 'input_sgst', 'input_igst', 'raw_material_inventory', 'finished_goods_inventory') and type = 'asset')
-    or (system_role in ('accounts_payable', 'output_cgst', 'output_sgst', 'output_igst', 'deductions_payable', 'customer_advances') and type = 'liability')
+    or (system_role in ('accounts_payable', 'output_cgst', 'output_sgst', 'output_igst', 'deductions_payable', 'customer_advances', 'tds_payable') and type = 'liability')
     or (system_role in ('cost_of_goods_sold', 'rnd_expense', 'wastage_expense', 'platform_commission_expense') and type = 'expense')
   ),
   created_at timestamptz not null default now()
@@ -351,7 +352,8 @@ begin
     (p_company_id, 'R&D Expense', 'expense', 'rnd_expense'),
     (p_company_id, 'Customer Advances', 'liability', 'customer_advances'),
     (p_company_id, 'Wastage Expense', 'expense', 'wastage_expense'),
-    (p_company_id, 'Platform Commission Expense', 'expense', 'platform_commission_expense')
+    (p_company_id, 'Platform Commission Expense', 'expense', 'platform_commission_expense'),
+    (p_company_id, 'TDS Payable', 'liability', 'tds_payable')
   on conflict (company_id, system_role) where system_role is not null do nothing;
 end;
 $$;
@@ -1685,13 +1687,20 @@ create policy bank_transactions_delete on public.bank_transactions
 -- inserts the payment; posts the two matching journal_entries legs
 -- (sales: debit bank account / credit Accounts Receivable — purchase:
 -- debit Accounts Payable / credit bank account).
-create function public.post_payment(
+-- Adding p_tds_section (Phase 32) changes this function's declared arity,
+-- so `create or replace` alone would leave the old 6-arg version behind
+-- as a separate overload (ambiguous-call risk) rather than replacing it —
+-- the old signature must be dropped explicitly first.
+drop function if exists public.post_payment(uuid, uuid, numeric, date, text, text);
+
+create or replace function public.post_payment(
   p_invoice_id uuid,
   p_bank_account_id uuid,
   p_amount numeric,
   p_payment_date date,
   p_mode text,
-  p_bank_ref text
+  p_bank_ref text,
+  p_tds_section text default null
 )
 returns public.payments
 language plpgsql
@@ -1705,6 +1714,16 @@ declare
   v_ar_ap_account_id uuid;
   v_entry_group uuid := gen_random_uuid();
   v_payment public.payments;
+  -- Phase 32: TDS WE deduct paying a vendor (payable side only — a
+  -- customer deducting TDS from what they pay US is a different,
+  -- deferred scenario, see ROADMAP.md). Computed on the full payment
+  -- amount as a simplification, flagged for a CA to confirm the correct
+  -- base (some sections exclude the GST component) — never hardcoded,
+  -- always read from tds_rates via resolve_tds_rate(), same discipline
+  -- CLAUDE.md section 3 already requires for GST.
+  v_tds_rate numeric;
+  v_tds_amount numeric(14, 2) := 0;
+  v_tds_payable_account_id uuid;
 begin
   v_company_id := public.current_user_company_id();
   if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
@@ -1748,6 +1767,25 @@ begin
     raise exception 'Missing system ledger account(s) for this company.';
   end if;
 
+  if p_tds_section is not null then
+    if v_invoice.type <> 'purchase' then
+      raise exception 'TDS can only be deducted on a purchase-invoice payment.';
+    end if;
+    v_tds_rate := public.resolve_tds_rate(p_tds_section, p_payment_date);
+    if v_tds_rate is null then
+      raise exception 'No TDS rate found for section % as of %.', p_tds_section, p_payment_date;
+    end if;
+    v_tds_amount := round(p_amount * v_tds_rate / 100, 2);
+    if v_tds_amount >= p_amount then
+      raise exception 'Computed TDS (%) cannot exceed the payment amount (%).', v_tds_amount, p_amount;
+    end if;
+    select id into v_tds_payable_account_id from public.chart_of_accounts
+      where company_id = v_company_id and system_role = 'tds_payable';
+    if v_tds_payable_account_id is null then
+      raise exception 'Missing system ledger account(s) for this company.';
+    end if;
+  end if;
+
   insert into public.payments (company_id, invoice_id, bank_account_id, amount, payment_date, mode, bank_ref, entry_group_id)
   values (v_company_id, p_invoice_id, p_bank_account_id, p_amount, p_payment_date, p_mode, p_bank_ref, v_entry_group)
   returning * into v_payment;
@@ -1761,19 +1799,28 @@ begin
     insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
       values (v_company_id, v_entry_group, p_payment_date, v_ar_ap_account_id, p_amount, 0, 'payment', v_payment.id);
     insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
-      values (v_company_id, v_entry_group, p_payment_date, p_bank_account_id, 0, p_amount, 'payment', v_payment.id);
+      values (v_company_id, v_entry_group, p_payment_date, p_bank_account_id, 0, p_amount - v_tds_amount, 'payment', v_payment.id);
+    if v_tds_amount > 0 then
+      insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+        values (v_company_id, v_entry_group, p_payment_date, v_tds_payable_account_id, 0, v_tds_amount, 'payment', v_payment.id);
+      insert into public.tds_transactions (
+        company_id, payment_id, payee_party_id, section, taxable_base, rate, tds_amount
+      ) values (
+        v_company_id, v_payment.id, v_invoice.party_id, p_tds_section, p_amount, v_tds_rate, v_tds_amount
+      );
+    end if;
   end if;
 
   return v_payment;
 end;
 $$;
 
-grant execute on function public.post_payment(uuid, uuid, numeric, date, text, text) to authenticated;
+grant execute on function public.post_payment(uuid, uuid, numeric, date, text, text, text) to authenticated;
 
 -- Reverses a posted payment the same way cancel_invoice() reverses an
 -- invoice: a new entry_group with every leg's debit/credit swapped,
 -- original rows untouched.
-create function public.cancel_payment(p_payment_id uuid)
+create or replace function public.cancel_payment(p_payment_id uuid)
 returns public.payments
 language plpgsql
 security definer
@@ -1805,6 +1852,12 @@ begin
     insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
     values (v_company_id, v_reversal_group, current_date, v_leg.account_id, v_leg.credit, v_leg.debit, 'payment_cancellation', v_payment.id);
   end loop;
+
+  -- Phase 32: the reversal above already correctly undoes the TDS
+  -- journal leg (it reverses every leg in the entry group generically) —
+  -- this just removes the now-stale tds_transactions record so a TDS
+  -- summary report doesn't keep showing a deduction that was reversed.
+  delete from public.tds_transactions where payment_id = v_payment.id;
 
   update public.payments set status = 'cancelled' where id = v_payment.id returning * into v_payment;
 
@@ -4608,3 +4661,105 @@ as $$
 $$;
 
 grant execute on function public.project_profitability(uuid) to authenticated;
+
+-- ============================================================
+-- Phase 32 — Tax & CA: TDS Tracking + Expanded CA Package
+-- TDS WE deduct paying a vendor (payable side) only — a customer
+-- deducting TDS from what they pay US ("TDS receivable") is a different,
+-- deferred scenario (see ROADMAP.md). Rates are never hardcoded, same
+-- discipline CLAUDE.md section 3 already requires for GST: read from
+-- tds_rates via resolve_tds_rate(), an effective-dated table just like
+-- tax_rates.
+-- ============================================================
+
+create table public.tds_rates (
+  id uuid primary key default gen_random_uuid(),
+  section text not null,
+  rate numeric(5, 2) not null check (rate >= 0),
+  effective_from date not null,
+  effective_to date,
+  created_at timestamptz not null default now(),
+  constraint tds_rates_valid_range check (effective_to is null or effective_to >= effective_from)
+);
+
+grant select, insert, update, delete on public.tds_rates to authenticated;
+grant all on public.tds_rates to service_role;
+
+alter table public.tds_rates enable row level security;
+
+-- Global, not company-scoped — same shape as tax_rates. Admin-only write,
+-- same reasoning TaxRates.jsx already documents (rate changes reviewed
+-- manually, never auto-applied).
+create policy tds_rates_select on public.tds_rates for select using (true);
+create policy tds_rates_write on public.tds_rates
+  for insert with check (public.current_user_role() = 'admin');
+create policy tds_rates_update on public.tds_rates
+  for update using (public.current_user_role() = 'admin');
+create policy tds_rates_delete on public.tds_rates
+  for delete using (public.current_user_role() = 'admin');
+
+create function public.resolve_tds_rate(p_section text, p_as_of date)
+returns numeric
+language sql
+stable
+as $$
+  select rate from public.tds_rates
+  where section = p_section
+    and effective_from <= p_as_of
+    and (effective_to is null or effective_to >= p_as_of)
+  order by effective_from desc
+  limit 1;
+$$;
+
+grant execute on function public.resolve_tds_rate(text, date) to authenticated;
+
+-- One row per TDS deduction actually posted (see post_payment() above).
+-- deposited_on is nullable — set later, separately, once the deducted
+-- amount is actually deposited with the government; a plain admin/
+-- accountant update, not itself ledger-affecting (matches the same trust
+-- level already extended for timesheets.invoice_id in Phase 31).
+create table public.tds_transactions (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  payment_id uuid not null references public.payments (id) unique,
+  payee_party_id uuid not null references public.parties (id),
+  section text not null,
+  taxable_base numeric(14, 2) not null,
+  rate numeric(5, 2) not null,
+  tds_amount numeric(14, 2) not null,
+  deposited_on date,
+  created_at timestamptz not null default now()
+);
+
+grant select, insert, update, delete on public.tds_transactions to authenticated;
+grant all on public.tds_transactions to service_role;
+
+alter table public.tds_transactions enable row level security;
+
+create policy tds_transactions_select on public.tds_transactions
+  for select using (company_id = public.current_user_company_id());
+create policy tds_transactions_update on public.tds_transactions
+  for update using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+-- No insert/delete policy — insert happens only via post_payment(),
+-- delete only via cancel_payment() (both SECURITY DEFINER).
+
+create function public.tds_summary(p_from date, p_to date)
+returns table (
+  payment_date date, payee_name text, section text,
+  taxable_base numeric, rate numeric, tds_amount numeric, deposited_on date
+)
+language sql
+stable
+as $$
+  select p.payment_date, party.name, t.section, t.taxable_base, t.rate, t.tds_amount, t.deposited_on
+  from public.tds_transactions t
+  join public.payments p on p.id = t.payment_id
+  join public.parties party on party.id = t.payee_party_id
+  where p.payment_date between p_from and p_to
+  order by p.payment_date;
+$$;
+
+grant execute on function public.tds_summary(date, date) to authenticated;

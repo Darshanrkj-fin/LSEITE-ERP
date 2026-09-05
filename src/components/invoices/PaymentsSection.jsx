@@ -20,20 +20,24 @@ export function PaymentsSection({ invoice }) {
   const [paymentDate, setPaymentDate] = useState(today())
   const [mode, setMode] = useState(MODES[0])
   const [bankRef, setBankRef] = useState('')
+  const [tdsSection, setTdsSection] = useState('')
+  const [tdsSections, setTdsSections] = useState([])
   const [submitting, setSubmitting] = useState(false)
   const [cancellingId, setCancellingId] = useState(null)
 
   const load = async () => {
     setLoading(true)
-    const [{ data: pays, error: payError }, { data: status }, { data: accounts }] = await Promise.all([
+    const [{ data: pays, error: payError }, { data: status }, { data: accounts }, { data: tdsRows }] = await Promise.all([
       supabase.from('payments').select('*').eq('invoice_id', invoice.id).order('created_at'),
       supabase.from('invoice_payment_status').select('amount_paid, balance_due').eq('invoice_id', invoice.id).maybeSingle(),
       supabase.from('chart_of_accounts').select('id, name').eq('type', 'asset'),
+      invoice.type === 'purchase' ? supabase.from('tds_rates').select('section').order('section') : Promise.resolve({ data: [] }),
     ])
     if (payError) setError(payError.message)
     else setPayments(pays ?? [])
     setBalance(status ?? { amount_paid: 0, balance_due: invoice.grand_total })
     setBankAccounts(accounts ?? [])
+    setTdsSections([...new Set((tdsRows ?? []).map((r) => r.section))])
     setLoading(false)
   }
 
@@ -53,6 +57,7 @@ export function PaymentsSection({ invoice }) {
       p_payment_date: paymentDate,
       p_mode: mode,
       p_bank_ref: bankRef || null,
+      p_tds_section: tdsSection || null,
     })
     setSubmitting(false)
     if (postError) {
@@ -61,6 +66,7 @@ export function PaymentsSection({ invoice }) {
     }
     setAmount('')
     setBankRef('')
+    setTdsSection('')
     load()
   }
 
@@ -193,6 +199,23 @@ export function PaymentsSection({ invoice }) {
               className="rounded border border-slate-300 px-3 py-2"
             />
           </label>
+          {invoice.type === 'purchase' && (
+            <label className="text-sm">
+              <span className="mb-1 block text-muted">TDS section (optional)</span>
+              <select
+                value={tdsSection}
+                onChange={(e) => setTdsSection(e.target.value)}
+                className="rounded border border-slate-300 px-3 py-2"
+              >
+                <option value="">None</option>
+                {tdsSections.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <button
             type="submit"
             disabled={submitting}

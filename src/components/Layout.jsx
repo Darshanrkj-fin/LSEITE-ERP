@@ -15,6 +15,7 @@ const navGroups = [
       { to: '/company', label: 'Company Profile' },
       { to: '/chart-of-accounts', label: 'Chart of Accounts' },
       { to: '/tax-rates', label: 'Tax Rates' },
+      { to: '/tds-rates', label: 'TDS Rates' },
     ],
   },
   {
@@ -74,6 +75,7 @@ const navGroups = [
       { to: '/batch-expiry-report', label: 'Batch / Expiry Report' },
       { to: '/ar-ap-aging', label: 'AR/AP Aging' },
       { to: '/party-statement', label: 'Party Statement' },
+      { to: '/tds-summary', label: 'TDS Summary' },
     ],
   },
   {
