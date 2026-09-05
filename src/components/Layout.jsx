@@ -54,8 +54,17 @@ const navGroups = [
     label: 'Purchases & Banking',
     items: [
       { to: '/purchase-invoices', label: 'Purchase Invoices' },
+      { to: '/bank-accounts', label: 'Bank Accounts' },
       { to: '/bank-transactions', label: 'Bank Transactions' },
       { to: '/reconciliation', label: 'Reconciliation' },
+    ],
+  },
+  {
+    label: 'Fixed Assets',
+    items: [
+      { to: '/asset-categories', label: 'Asset Categories' },
+      { to: '/fixed-assets', label: 'Fixed Assets' },
+      { to: '/depreciation-runs', label: 'Depreciation Runs' },
     ],
   },
   {

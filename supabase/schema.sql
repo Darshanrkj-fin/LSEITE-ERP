@@ -109,14 +109,16 @@ create table public.chart_of_accounts (
       'cost_of_goods_sold', 'rnd_expense',
       'customer_advances',
       'wastage_expense', 'platform_commission_expense',
-      'tds_payable'
+      'tds_payable',
+      'fixed_assets_gross', 'accumulated_depreciation', 'depreciation_expense', 'disposal_gain_loss'
     )
   ),
   constraint coa_system_role_type_consistency check (
     system_role is null
-    or (system_role in ('accounts_receivable', 'input_cgst', 'input_sgst', 'input_igst', 'raw_material_inventory', 'finished_goods_inventory') and type = 'asset')
+    or (system_role in ('accounts_receivable', 'input_cgst', 'input_sgst', 'input_igst', 'raw_material_inventory', 'finished_goods_inventory', 'fixed_assets_gross', 'accumulated_depreciation') and type = 'asset')
     or (system_role in ('accounts_payable', 'output_cgst', 'output_sgst', 'output_igst', 'deductions_payable', 'customer_advances', 'tds_payable') and type = 'liability')
-    or (system_role in ('cost_of_goods_sold', 'rnd_expense', 'wastage_expense', 'platform_commission_expense') and type = 'expense')
+    or (system_role in ('cost_of_goods_sold', 'rnd_expense', 'wastage_expense', 'platform_commission_expense', 'depreciation_expense') and type = 'expense')
+    or (system_role in ('disposal_gain_loss') and type = 'income')
   ),
   created_at timestamptz not null default now()
 );
@@ -353,7 +355,11 @@ begin
     (p_company_id, 'Customer Advances', 'liability', 'customer_advances'),
     (p_company_id, 'Wastage Expense', 'expense', 'wastage_expense'),
     (p_company_id, 'Platform Commission Expense', 'expense', 'platform_commission_expense'),
-    (p_company_id, 'TDS Payable', 'liability', 'tds_payable')
+    (p_company_id, 'TDS Payable', 'liability', 'tds_payable'),
+    (p_company_id, 'Fixed Assets', 'asset', 'fixed_assets_gross'),
+    (p_company_id, 'Accumulated Depreciation', 'asset', 'accumulated_depreciation'),
+    (p_company_id, 'Depreciation Expense', 'expense', 'depreciation_expense'),
+    (p_company_id, 'Gain/Loss on Asset Disposal', 'income', 'disposal_gain_loss')
   on conflict (company_id, system_role) where system_role is not null do nothing;
 end;
 $$;
@@ -1634,7 +1640,7 @@ create unique index bank_transactions_matched_payment_idx
 -- "only a payment in the same company" since RLS on bank_transactions only
 -- sees the row being written, not the payments table — this trigger closes
 -- that gap regardless of which policy/query performs the update.
-create function public.validate_bank_transaction_match()
+create or replace function public.validate_bank_transaction_match()
 returns trigger
 language plpgsql
 as $$
@@ -1644,6 +1650,16 @@ begin
       select 1 from public.payments where id = new.matched_payment_id and company_id = new.company_id
     ) then
       raise exception 'Matched payment does not belong to the same company.';
+    end if;
+  end if;
+  -- Phase 33: same reasoning as the matched_payment_id check above — a
+  -- plain RLS policy can't see across to bank_accounts to confirm it's
+  -- the same company.
+  if new.bank_account_id is not null then
+    if not exists (
+      select 1 from public.bank_accounts where id = new.bank_account_id and company_id = new.company_id
+    ) then
+      raise exception 'Bank account does not belong to the same company.';
     end if;
   end if;
   return new;
@@ -4763,3 +4779,456 @@ as $$
 $$;
 
 grant execute on function public.tds_summary(date, date) to authenticated;
+
+-- ============================================================
+-- Phase 33 — Banking Enhancements & Fixed Assets
+-- ============================================================
+
+-- Today "the bank" is really just a chart-of-accounts asset row with no
+-- dedicated identity. This is a metadata sidecar, not a new posting
+-- target — post_payment()/post_delivery_settlement() keep pointing
+-- straight at chart_of_accounts exactly as before; this just gives the
+-- UI a friendlier way to label and pick "which bank account" than a
+-- generic COA row name, and lets bank_transactions (below) know which
+-- account a statement line belongs to once more than one exists.
+create table public.bank_accounts (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  branch_id uuid references public.branches (id) default public.current_user_default_branch_id(),
+  chart_of_accounts_id uuid not null references public.chart_of_accounts (id) unique,
+  account_name text not null,
+  account_number text,
+  ifsc_code text,
+  bank_name text,
+  created_at timestamptz not null default now()
+);
+
+grant select, insert, update, delete on public.bank_accounts to authenticated;
+grant all on public.bank_accounts to service_role;
+
+alter table public.bank_accounts enable row level security;
+
+create policy bank_accounts_select on public.bank_accounts
+  for select using (company_id = public.current_user_company_id());
+create policy bank_accounts_write on public.bank_accounts
+  for insert with check (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy bank_accounts_update on public.bank_accounts
+  for update using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy bank_accounts_delete on public.bank_accounts
+  for delete using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+
+-- A plain RLS policy can't see across to chart_of_accounts to confirm
+-- it's an asset account in the same company — same reasoning as
+-- validate_bank_transaction_match() above.
+create function public.validate_bank_account()
+returns trigger
+language plpgsql
+as $$
+begin
+  if not exists (
+    select 1 from public.chart_of_accounts
+    where id = new.chart_of_accounts_id and company_id = new.company_id and type = 'asset'
+  ) then
+    raise exception 'Linked chart-of-accounts row must be an asset account in the same company.';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger bank_accounts_validate
+  before insert or update on public.bank_accounts
+  for each row execute function public.validate_bank_account();
+
+-- Nullable, additive — existing rows and every current import path are
+-- unaffected until a bank_account is actually chosen somewhere.
+alter table public.bank_transactions add column bank_account_id uuid references public.bank_accounts (id);
+
+-- ------------------------------------------------------------
+-- Fixed Assets — straight-line depreciation only (the only method
+-- actually built here; WDV/reducing-balance is a real, separate need
+-- flagged rather than built speculatively). GST input credit on capital
+-- goods has its own separate rules (e.g. ITC reversal on sale) not
+-- handled here — flagged for a CA, same reasoning as Phase 32's TDS base.
+-- ------------------------------------------------------------
+
+create table public.asset_categories (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  name text not null,
+  useful_life_years numeric(5, 2) not null check (useful_life_years > 0),
+  created_at timestamptz not null default now(),
+  unique (company_id, name)
+);
+
+grant select, insert, update, delete on public.asset_categories to authenticated;
+grant all on public.asset_categories to service_role;
+
+alter table public.asset_categories enable row level security;
+
+create policy asset_categories_select on public.asset_categories
+  for select using (company_id = public.current_user_company_id());
+create policy asset_categories_write on public.asset_categories
+  for insert with check (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy asset_categories_update on public.asset_categories
+  for update using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy asset_categories_delete on public.asset_categories
+  for delete using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+
+create table public.fixed_assets (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  branch_id uuid references public.branches (id) default public.current_user_default_branch_id(),
+  category_id uuid not null references public.asset_categories (id),
+  name text not null,
+  asset_code text,
+  purchase_date date not null,
+  cost numeric(14, 2) not null check (cost > 0),
+  salvage_value numeric(14, 2) not null default 0 check (salvage_value >= 0 and salvage_value < cost),
+  accumulated_depreciation numeric(14, 2) not null default 0 check (accumulated_depreciation >= 0),
+  status text not null default 'active' check (status in ('active', 'disposed')),
+  disposal_date date,
+  disposal_proceeds numeric(14, 2),
+  entry_group_id uuid not null,
+  created_at timestamptz not null default now(),
+  constraint fixed_assets_accum_dep_not_exceed_depreciable check (accumulated_depreciation <= cost - salvage_value)
+);
+
+grant select, insert, update, delete on public.fixed_assets to authenticated;
+grant all on public.fixed_assets to service_role;
+
+alter table public.fixed_assets enable row level security;
+
+create policy fixed_assets_select on public.fixed_assets
+  for select using (company_id = public.current_user_company_id());
+-- No insert/update/delete policy — capitalize_fixed_asset(),
+-- post_depreciation_run(), and dispose_fixed_asset() (all SECURITY
+-- DEFINER) are the only writes.
+
+-- One row per event affecting an asset — capitalization, each
+-- depreciation run's own contribution, disposal — the same "movement
+-- history" role stock_ledger plays for inventory.
+create table public.asset_transactions (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  asset_id uuid not null references public.fixed_assets (id),
+  transaction_type text not null check (transaction_type in ('capitalization', 'depreciation', 'disposal')),
+  transaction_date date not null,
+  amount numeric(14, 2) not null,
+  entry_group_id uuid not null,
+  created_at timestamptz not null default now()
+);
+
+grant select, insert, update, delete on public.asset_transactions to authenticated;
+grant all on public.asset_transactions to service_role;
+
+alter table public.asset_transactions enable row level security;
+
+create policy asset_transactions_select on public.asset_transactions
+  for select using (company_id = public.current_user_company_id());
+
+-- One row per batch depreciation posting (typically monthly). A unique
+-- constraint on (company_id, period_start) is defense in depth —
+-- post_depreciation_run() already checks this explicitly too, same
+-- belt-and-suspenders reasoning as delivery_settlement_invoices.
+create table public.depreciation_runs (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  run_date date not null,
+  period_start date not null,
+  period_end date not null,
+  total_depreciation numeric(14, 2) not null default 0,
+  entry_group_id uuid not null,
+  created_at timestamptz not null default now(),
+  unique (company_id, period_start)
+);
+
+grant select, insert, update, delete on public.depreciation_runs to authenticated;
+grant all on public.depreciation_runs to service_role;
+
+alter table public.depreciation_runs enable row level security;
+
+create policy depreciation_runs_select on public.depreciation_runs
+  for select using (company_id = public.current_user_company_id());
+
+-- Capitalizes a new fixed asset: Dr Fixed Assets (cost) / Cr the chosen
+-- funding account (bank if paid immediately, or a payable if bought on
+-- credit — either an asset or liability account is accepted, unlike most
+-- postings here which only accept one type, since a capital purchase is
+-- routinely made either way).
+create or replace function public.capitalize_fixed_asset(
+  p_category_id uuid,
+  p_name text,
+  p_asset_code text,
+  p_purchase_date date,
+  p_cost numeric,
+  p_salvage_value numeric,
+  p_funding_account_id uuid
+)
+returns public.fixed_assets
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_fixed_assets_account_id uuid;
+  v_entry_group uuid := gen_random_uuid();
+  v_asset public.fixed_assets;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to capitalize fixed assets.';
+  end if;
+  perform public.reject_if_period_closed(v_company_id, p_purchase_date);
+
+  if not exists (select 1 from public.asset_categories where id = p_category_id and company_id = v_company_id) then
+    raise exception 'Asset category not found in your company.';
+  end if;
+  if p_salvage_value >= p_cost then
+    raise exception 'Salvage value must be less than cost.';
+  end if;
+  if not exists (
+    select 1 from public.chart_of_accounts
+    where id = p_funding_account_id and company_id = v_company_id and type in ('asset', 'liability')
+  ) then
+    raise exception 'Funding account not found in your company, or not an asset/liability account.';
+  end if;
+
+  select id into v_fixed_assets_account_id from public.chart_of_accounts
+    where company_id = v_company_id and system_role = 'fixed_assets_gross';
+  if v_fixed_assets_account_id is null then
+    raise exception 'Missing system ledger account(s) for this company.';
+  end if;
+
+  insert into public.fixed_assets (
+    company_id, category_id, name, asset_code, purchase_date, cost, salvage_value, entry_group_id
+  ) values (
+    v_company_id, p_category_id, p_name, p_asset_code, p_purchase_date, p_cost, p_salvage_value, v_entry_group
+  ) returning * into v_asset;
+
+  insert into public.asset_transactions (company_id, asset_id, transaction_type, transaction_date, amount, entry_group_id)
+    values (v_company_id, v_asset.id, 'capitalization', p_purchase_date, p_cost, v_entry_group);
+
+  insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+    values (v_company_id, v_entry_group, p_purchase_date, v_fixed_assets_account_id, p_cost, 0, 'fixed_asset', v_asset.id);
+  insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+    values (v_company_id, v_entry_group, p_purchase_date, p_funding_account_id, 0, p_cost, 'fixed_asset', v_asset.id);
+
+  return v_asset;
+end;
+$$;
+
+grant execute on function public.capitalize_fixed_asset(uuid, text, text, date, numeric, numeric, uuid) to authenticated;
+
+-- Posts one month of straight-line depreciation for every active asset
+-- purchased on or before the period end, capped so accumulated
+-- depreciation never exceeds cost minus salvage value. One combined
+-- journal pair for the whole run (Dr Depreciation Expense / Cr
+-- Accumulated Depreciation), not one pair per asset — matches how
+-- post_wastage()/post_delivery_settlement() already aggregate rather than
+-- posting a journal leg per line.
+create function public.post_depreciation_run(p_run_date date)
+returns public.depreciation_runs
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_period_start date := date_trunc('month', p_run_date)::date;
+  v_period_end date := (date_trunc('month', p_run_date) + interval '1 month - 1 day')::date;
+  v_dep_expense_account_id uuid;
+  v_accum_dep_account_id uuid;
+  v_entry_group uuid := gen_random_uuid();
+  v_run public.depreciation_runs;
+  v_asset record;
+  v_monthly_dep numeric(14, 2);
+  v_remaining numeric(14, 2);
+  v_this_dep numeric(14, 2);
+  v_total numeric(14, 2) := 0;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to post a depreciation run.';
+  end if;
+  perform public.reject_if_period_closed(v_company_id, p_run_date);
+
+  if exists (select 1 from public.depreciation_runs where company_id = v_company_id and period_start = v_period_start) then
+    raise exception 'A depreciation run for % already exists.', to_char(v_period_start, 'Mon YYYY');
+  end if;
+
+  select id into v_dep_expense_account_id from public.chart_of_accounts
+    where company_id = v_company_id and system_role = 'depreciation_expense';
+  select id into v_accum_dep_account_id from public.chart_of_accounts
+    where company_id = v_company_id and system_role = 'accumulated_depreciation';
+  if v_dep_expense_account_id is null or v_accum_dep_account_id is null then
+    raise exception 'Missing system ledger account(s) for this company.';
+  end if;
+
+  insert into public.depreciation_runs (company_id, run_date, period_start, period_end, total_depreciation, entry_group_id)
+  values (v_company_id, p_run_date, v_period_start, v_period_end, 0, v_entry_group)
+  returning * into v_run;
+
+  for v_asset in
+    select fa.id, fa.cost, fa.salvage_value, fa.accumulated_depreciation, ac.useful_life_years
+    from public.fixed_assets fa
+    join public.asset_categories ac on ac.id = fa.category_id
+    where fa.company_id = v_company_id and fa.status = 'active' and fa.purchase_date <= v_period_end
+  loop
+    v_monthly_dep := round((v_asset.cost - v_asset.salvage_value) / (v_asset.useful_life_years * 12), 2);
+    v_remaining := (v_asset.cost - v_asset.salvage_value) - v_asset.accumulated_depreciation;
+    v_this_dep := least(v_monthly_dep, v_remaining);
+    if v_this_dep > 0 then
+      update public.fixed_assets set accumulated_depreciation = accumulated_depreciation + v_this_dep where id = v_asset.id;
+      insert into public.asset_transactions (company_id, asset_id, transaction_type, transaction_date, amount, entry_group_id)
+        values (v_company_id, v_asset.id, 'depreciation', p_run_date, v_this_dep, v_entry_group);
+      v_total := v_total + v_this_dep;
+    end if;
+  end loop;
+
+  if v_total > 0 then
+    insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+      values (v_company_id, v_entry_group, p_run_date, v_dep_expense_account_id, v_total, 0, 'depreciation_run', v_run.id);
+    insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+      values (v_company_id, v_entry_group, p_run_date, v_accum_dep_account_id, 0, v_total, 'depreciation_run', v_run.id);
+  end if;
+
+  update public.depreciation_runs set total_depreciation = v_total where id = v_run.id returning * into v_run;
+
+  return v_run;
+end;
+$$;
+
+grant execute on function public.post_depreciation_run(date) to authenticated;
+
+-- Disposes an active asset: receives proceeds, clears the asset's own
+-- gross cost and accumulated depreciation, and plugs the difference to a
+-- single combined gain/loss account (credited for a gain, debited for a
+-- loss) — a rare enough event that one P&L line covering both signs is
+-- simpler than two separate system accounts.
+create or replace function public.dispose_fixed_asset(
+  p_asset_id uuid,
+  p_disposal_date date,
+  p_proceeds numeric,
+  p_receiving_account_id uuid
+)
+returns public.fixed_assets
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_asset public.fixed_assets;
+  v_fixed_assets_account_id uuid;
+  v_accum_dep_account_id uuid;
+  v_gain_loss_account_id uuid;
+  v_nbv numeric(14, 2);
+  v_gain_loss numeric(14, 2);
+  v_entry_group uuid := gen_random_uuid();
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to dispose of fixed assets.';
+  end if;
+  perform public.reject_if_period_closed(v_company_id, p_disposal_date);
+
+  select * into v_asset from public.fixed_assets where id = p_asset_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Asset not found in your company.';
+  end if;
+  if v_asset.status <> 'active' then
+    raise exception 'Only an active asset can be disposed of (current status: %).', v_asset.status;
+  end if;
+  if p_proceeds < 0 then
+    raise exception 'Disposal proceeds cannot be negative.';
+  end if;
+
+  if not exists (
+    select 1 from public.chart_of_accounts
+    where id = p_receiving_account_id and company_id = v_company_id and type = 'asset'
+  ) then
+    raise exception 'Receiving account not found in your company, or not an asset account.';
+  end if;
+
+  select id into v_fixed_assets_account_id from public.chart_of_accounts
+    where company_id = v_company_id and system_role = 'fixed_assets_gross';
+  select id into v_accum_dep_account_id from public.chart_of_accounts
+    where company_id = v_company_id and system_role = 'accumulated_depreciation';
+  select id into v_gain_loss_account_id from public.chart_of_accounts
+    where company_id = v_company_id and system_role = 'disposal_gain_loss';
+  if v_fixed_assets_account_id is null or v_accum_dep_account_id is null or v_gain_loss_account_id is null then
+    raise exception 'Missing system ledger account(s) for this company.';
+  end if;
+
+  v_nbv := v_asset.cost - v_asset.accumulated_depreciation;
+  v_gain_loss := p_proceeds - v_nbv;
+
+  insert into public.asset_transactions (company_id, asset_id, transaction_type, transaction_date, amount, entry_group_id)
+    values (v_company_id, v_asset.id, 'disposal', p_disposal_date, p_proceeds, v_entry_group);
+
+  insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+    values (v_company_id, v_entry_group, p_disposal_date, p_receiving_account_id, p_proceeds, 0, 'fixed_asset_disposal', v_asset.id);
+  if v_asset.accumulated_depreciation > 0 then
+    insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+      values (v_company_id, v_entry_group, p_disposal_date, v_accum_dep_account_id, v_asset.accumulated_depreciation, 0, 'fixed_asset_disposal', v_asset.id);
+  end if;
+  insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+    values (v_company_id, v_entry_group, p_disposal_date, v_fixed_assets_account_id, 0, v_asset.cost, 'fixed_asset_disposal', v_asset.id);
+  if v_gain_loss > 0 then
+    insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+      values (v_company_id, v_entry_group, p_disposal_date, v_gain_loss_account_id, 0, v_gain_loss, 'fixed_asset_disposal', v_asset.id);
+  elsif v_gain_loss < 0 then
+    insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+      values (v_company_id, v_entry_group, p_disposal_date, v_gain_loss_account_id, -v_gain_loss, 0, 'fixed_asset_disposal', v_asset.id);
+  end if;
+
+  update public.fixed_assets
+    set status = 'disposed', disposal_date = p_disposal_date, disposal_proceeds = p_proceeds
+    where id = v_asset.id
+    returning * into v_asset;
+
+  return v_asset;
+end;
+$$;
+
+grant execute on function public.dispose_fixed_asset(uuid, date, numeric, uuid) to authenticated;
+
+-- Current-state snapshot, not point-in-time — an asset register is
+-- inherently "as things stand today," and reconstructing historical
+-- accumulated depreciation from asset_transactions as of an arbitrary
+-- past date would be false precision this business doesn't need yet.
+create function public.fixed_asset_register()
+returns table (
+  asset_id uuid, name text, category_name text, purchase_date date,
+  cost numeric, accumulated_depreciation numeric, net_book_value numeric, status text
+)
+language sql
+stable
+as $$
+  select fa.id, fa.name, ac.name, fa.purchase_date, fa.cost, fa.accumulated_depreciation,
+    fa.cost - fa.accumulated_depreciation, fa.status
+  from public.fixed_assets fa
+  join public.asset_categories ac on ac.id = fa.category_id
+  order by fa.purchase_date;
+$$;
+
+grant execute on function public.fixed_asset_register() to authenticated;

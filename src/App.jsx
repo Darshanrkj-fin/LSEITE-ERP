@@ -46,6 +46,10 @@ import { DeliverySettlements } from './pages/DeliverySettlements'
 import { Projects } from './pages/Projects'
 import { TdsRates } from './pages/TdsRates'
 import { TdsSummary } from './pages/TdsSummary'
+import { BankAccounts } from './pages/BankAccounts'
+import { AssetCategories } from './pages/AssetCategories'
+import { FixedAssets } from './pages/FixedAssets'
+import { DepreciationRuns } from './pages/DepreciationRuns'
 
 function App() {
   return (
@@ -100,6 +104,10 @@ function App() {
         <Route path="/projects/*" element={<Projects />} />
         <Route path="/tds-rates" element={<TdsRates />} />
         <Route path="/tds-summary" element={<TdsSummary />} />
+        <Route path="/bank-accounts" element={<BankAccounts />} />
+        <Route path="/asset-categories" element={<AssetCategories />} />
+        <Route path="/fixed-assets" element={<FixedAssets />} />
+        <Route path="/depreciation-runs" element={<DepreciationRuns />} />
         <Route path="/change-password" element={<ChangePassword />} />
         <Route path="/manage-users" element={<ManageUsers />} />
       </Route>

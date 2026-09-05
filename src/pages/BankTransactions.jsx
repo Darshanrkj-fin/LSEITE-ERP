@@ -3,13 +3,14 @@ import { supabase } from '../lib/supabaseClient'
 import { useAuth } from '../context/AuthContext'
 import { ImportStatementSection } from '../components/bankTransactions/ImportStatementSection'
 
-const emptyTxn = { transaction_date: '', amount: '', description: '' }
+const emptyTxn = { transaction_date: '', amount: '', description: '', bank_account_id: '' }
 
 export function BankTransactions() {
   const { profile } = useAuth()
   const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
 
   const [txns, setTxns] = useState([])
+  const [bankAccounts, setBankAccounts] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -25,12 +26,13 @@ export function BankTransactions() {
   // the "if (loading) return <p>Loading…</p>" guard below.
   const load = async ({ silent } = {}) => {
     if (!silent) setLoading(true)
-    const { data, error: fetchError } = await supabase
-      .from('bank_transactions')
-      .select('*')
-      .order('transaction_date', { ascending: false })
+    const [{ data, error: fetchError }, { data: accounts }] = await Promise.all([
+      supabase.from('bank_transactions').select('*, bank_accounts(account_name)').order('transaction_date', { ascending: false }),
+      supabase.from('bank_accounts').select('id, account_name').order('account_name'),
+    ])
     if (fetchError) setError(fetchError.message)
     else setTxns(data)
+    setBankAccounts(accounts ?? [])
     if (!silent) setLoading(false)
   }
 
@@ -46,6 +48,7 @@ export function BankTransactions() {
       transaction_date: newTxn.transaction_date,
       amount: newTxn.amount,
       description: newTxn.description || null,
+      bank_account_id: newTxn.bank_account_id || null,
       company_id: profile.company_id,
     })
     setAdding(false)
@@ -112,6 +115,7 @@ export function BankTransactions() {
         <ImportStatementSection
           companyId={profile.company_id}
           existingTxns={txns}
+          bankAccounts={bankAccounts}
           onImported={() => load({ silent: true })}
         />
       )}
@@ -122,6 +126,7 @@ export function BankTransactions() {
             <th className="py-2 pr-4">Date</th>
             <th className="py-2 pr-4">Amount</th>
             <th className="py-2 pr-4">Description</th>
+            <th className="py-2 pr-4">Account</th>
             <th className="py-2 pr-4">Matched</th>
             {canEdit && <th className="py-2 pr-4">Actions</th>}
           </tr>
@@ -155,6 +160,7 @@ export function BankTransactions() {
                       className="w-full rounded border border-slate-300 px-2 py-1"
                     />
                   </td>
+                  <td className="py-2 pr-4 text-muted">{txn.bank_accounts?.account_name || '—'}</td>
                   <td className="py-2 pr-4">{txn.matched_payment_id ? 'Yes' : 'No'}</td>
                   <td className="space-x-2 py-2 pr-4">
                     <button
@@ -174,6 +180,7 @@ export function BankTransactions() {
                   <td className="py-2 pr-4">{txn.transaction_date}</td>
                   <td className={`py-2 pr-4 ${txn.amount < 0 ? 'text-clay' : ''}`}>{txn.amount}</td>
                   <td className="py-2 pr-4">{txn.description || '—'}</td>
+                  <td className="py-2 pr-4 text-muted">{txn.bank_accounts?.account_name || '—'}</td>
                   <td className="py-2 pr-4">{txn.matched_payment_id ? 'Yes' : 'No'}</td>
                   {canEdit && (
                     <td className="space-x-2 py-2 pr-4">
@@ -191,7 +198,7 @@ export function BankTransactions() {
           ))}
           {txns.length === 0 && (
             <tr>
-              <td colSpan={5} className="py-4 text-muted">
+              <td colSpan={6} className="py-4 text-muted">
                 No bank transactions yet.
               </td>
             </tr>
@@ -232,6 +239,23 @@ export function BankTransactions() {
               className="rounded border border-slate-300 px-3 py-2"
             />
           </label>
+          {bankAccounts.length > 0 && (
+            <label className="text-sm">
+              <span className="mb-1 block text-muted">Account</span>
+              <select
+                value={newTxn.bank_account_id}
+                onChange={(e) => setNewTxn((f) => ({ ...f, bank_account_id: e.target.value }))}
+                className="rounded border border-slate-300 px-3 py-2"
+              >
+                <option value="">Not specified</option>
+                {bankAccounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.account_name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <button
             type="submit"
             disabled={adding}

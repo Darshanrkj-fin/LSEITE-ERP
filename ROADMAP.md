@@ -15,17 +15,18 @@ A cloud-hosted accounting system for a single company (multi-branch ready) that 
   produced as finished goods)
 - Subscriptions: recurring customer plans with variable items per cycle (not a fixed box)
 
-Every phase through Phase 32 is **built and live-tested** — see section 5 for Phases 1–19, section
+Every phase through Phase 33 is **built and live-tested** — see section 5 for Phases 1–19, section
 5b for Phases 20–24 (multi-branch schema readiness, quote management, expanded customer fields,
 advance/deposit payments, and a cohesive visual design system, drawn from a follow-up gap review),
 Phase 25 (bank statement PDF import, added outside the original phase plan at user request), and
-section 5d for Phases 26–32 (repo/platform hygiene, accounting period locking, AR/AP aging, party
+section 5d for Phases 26–33 (repo/platform hygiene, accounting period locking, AR/AP aging, party
 statements, units/warehouses schema, flexible customer-and-vendor parties, partial credit/debit
 notes, wastage write-offs, Swiggy/Zomato delivery settlement reconciliation, a full Consulting
-module with timesheet-based billing, and TDS tracking — the start of the `UPDATE.md` architecture
+module with timesheet-based billing, TDS tracking, multi-bank-account identity with CSV statement
+import, and fixed assets with straight-line depreciation — the start of the `UPDATE.md` architecture
 review below).
 
-Phases 33–37 (section 5d) are **planned, not yet built** — a mapping of `UPDATE.md`'s broader
+Phases 34–37 (section 5d) are **planned, not yet built** — a mapping of `UPDATE.md`'s broader
 architecture review (cloud kitchen + consulting as twin business lines, HR/payroll, TDS, fixed
 assets, Tally export, and more) onto this file's existing phase format, scoped additive-first per
 the decisions in section 5c. Only the "Later" items after section 5d remain fully out of scope, and
@@ -835,22 +836,44 @@ re-litigated per phase below:
   ₹1,180 ≠ 0 and blocking a chart-of-accounts deletion) — `trial_balance()` back to 0 = 0,
   `chart_of_accounts` back to 17 rows.
 
-### Phase 33 — Banking Enhancements & Fixed Assets
-- New `bank_accounts` table (today "the bank" is really just a chart-of-accounts asset row with no
-  dedicated identity) — company_id, branch_id, account name/number (masked in the UI), linked
-  `chart_of_accounts` row. `payments`/`bank_transactions` gain a nullable `bank_account_id` — the
-  existing rows and account references keep working unchanged.
-- Multiple bank/cash accounts, plus CSV/Excel statement import alongside the existing PDF import
-  (Phase 25) — same "parse client-side, never auto-import flagged/duplicate rows" design already
-  established there.
-- New `asset_categories`/`fixed_assets`/`asset_transactions`/`depreciation_runs` tables —
-  capitalization, disposal, and a scheduled depreciation run posting `Dr Depreciation Expense / Cr
-  Accumulated Depreciation` using the existing journal-posting pattern (one new SECURITY DEFINER
-  function, not a change to how posting already works).
+### Phase 33 — Banking Enhancements & Fixed Assets ✅
+- New `bank_accounts` table — a metadata sidecar (display name, masked account number, IFSC, bank
+  name) linked 1:1 to an existing asset-type `chart_of_accounts` row via a trigger-enforced FK
+  (mirrors `validate_bank_transaction_match()`'s existing "RLS can't see across tables" reasoning).
+  Doesn't change any posting logic — `post_payment()`/`post_delivery_settlement()` still point
+  straight at `chart_of_accounts`; this only gives the UI a friendlier account picker. New
+  `BankAccounts.jsx` admin screen.
+- `bank_transactions` gains a nullable `bank_account_id` (the existing trigger extended to validate
+  it, same pattern as the existing `matched_payment_id` check) — so once more than one account
+  exists, statement lines/reconciliation can be scoped per account.
+- A generic CSV bank-statement importer (`bankStatementCsvParser.js`) alongside the IDFC-specific PDF
+  one (Phase 25), auto-detecting common Date/Description/Amount-or-Debit-Credit column headers from
+  any bank's export — same "parse client-side, auto-import clean rows, skip flagged/duplicate rows"
+  design already established there. Verified in isolation (mixed date formats, debit/credit columns,
+  a row with no amount correctly flagged) before touching the database.
+- New `asset_categories`/`fixed_assets`/`asset_transactions`/`depreciation_runs` tables + 4 system
+  accounts (`fixed_assets_gross`, `accumulated_depreciation`, `depreciation_expense`,
+  `disposal_gain_loss`). `capitalize_fixed_asset()`, `post_depreciation_run()` (straight-line only —
+  WDV/reducing-balance flagged as a real, separate need, not built speculatively — one run per
+  calendar month, capped so accumulated depreciation never exceeds cost minus salvage value),
+  `dispose_fixed_asset()` (a single combined gain/loss account, debited for a loss or credited for a
+  gain — rare enough that one P&L line covering both signs is simpler than two accounts), and
+  `fixed_asset_register()` (current-state snapshot, feeds `FixedAssets.jsx`'s CSV/PDF export — the
+  Phase-33 piece of the expanded CA package). GST input-credit rules for capital goods (e.g. ITC
+  reversal on sale) aren't handled — flagged for a CA, same reasoning as Phase 32's TDS base.
 - **Explicitly deferred**: the full generalized `bank_reconciliations`/`bank_reconciliation_lines`
   model from `UPDATE.md` §30–31 replacing today's single `matched_payment_id` column — Phase 17's
   auto-suggest matching already covers this business's actual reconciliation need; revisit only if
   multiple bank accounts (above) make the single-match-column model genuinely insufficient.
+- Tested live end-to-end with throwaway data: confirmed the bank-account trigger rejects linking to a
+  non-asset account; capitalized a ₹12,000 asset (journal balanced); ran two months of straight-line
+  depreciation (₹200/month exactly, confirmed rejecting a second run for the same month); manually
+  pushed accumulated depreciation to near-total and confirmed a third run correctly capped at the
+  exact remaining ₹150 rather than the normal ₹200; disposed that asset for a ₹500 gain and a second
+  asset for a ₹700 loss, confirming both journals balanced and the loss/gain each landed on the right
+  side of the combined gain/loss account; confirmed re-disposing an already-disposed asset was
+  rejected. Full cleanup afterward — `trial_balance()` back to 0 = 0, `chart_of_accounts` back to 21
+  rows, first cleanup pass clean (no residue mistakes this time).
 
 ### Phase 34 — HR Foundations & Payroll Enhancements
 - New `departments`/`designations` tables; `employees` gains nullable `department_id`/
