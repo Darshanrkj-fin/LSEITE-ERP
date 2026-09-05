@@ -6,3 +6,19 @@ compatibility_date = "2026-09-05"
 # the Workers runtime's own Web APIs (fetch, Response, crypto.subtle,
 # btoa) rather than Node's Buffer/crypto module, so there's nothing here
 # that needs the Node compatibility shim.
+
+# Mirrors what's enabled in the dashboard (Settings > Observability) —
+# committed here so a future `wrangler pages deploy` doesn't reset it back
+# to defaults. head_sampling_rate 1 = trace/log every invocation, not a
+# sample; lower it if invocation volume ever makes that noisy/costly.
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+head_sampling_rate = 1
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
