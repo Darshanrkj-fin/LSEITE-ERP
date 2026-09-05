@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { useAuth } from '../context/AuthContext'
 import { ImportStatementSection } from '../components/bankTransactions/ImportStatementSection'
+import { AttachmentsSection } from '../components/AttachmentsSection'
 
 const emptyTxn = { transaction_date: '', amount: '', description: '', bank_account_id: '' }
 
@@ -20,6 +21,7 @@ export function BankTransactions() {
   const [editingId, setEditingId] = useState(null)
   const [editTxn, setEditTxn] = useState(emptyTxn)
   const [savingEdit, setSavingEdit] = useState(false)
+  const [expandedId, setExpandedId] = useState(null)
 
   // silent=true skips the loading flag — used after an import, so the
   // ImportStatementSection result summary isn't unmounted mid-display by
@@ -133,7 +135,8 @@ export function BankTransactions() {
         </thead>
         <tbody>
           {txns.map((txn) => (
-            <tr key={txn.id} className="border-b border-slate-100">
+            <Fragment key={txn.id}>
+            <tr className="border-b border-slate-100">
               {editingId === txn.id ? (
                 <>
                   <td className="py-2 pr-4">
@@ -177,7 +180,15 @@ export function BankTransactions() {
                 </>
               ) : (
                 <>
-                  <td className="py-2 pr-4">{txn.transaction_date}</td>
+                  <td className="py-2 pr-4">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedId((id) => (id === txn.id ? null : txn.id))}
+                      className="text-left hover:underline"
+                    >
+                      {expandedId === txn.id ? '▾' : '▸'} {txn.transaction_date}
+                    </button>
+                  </td>
                   <td className={`py-2 pr-4 ${txn.amount < 0 ? 'text-clay' : ''}`}>{txn.amount}</td>
                   <td className="py-2 pr-4">{txn.description || '—'}</td>
                   <td className="py-2 pr-4 text-muted">{txn.bank_accounts?.account_name || '—'}</td>
@@ -195,6 +206,14 @@ export function BankTransactions() {
                 </>
               )}
             </tr>
+            {expandedId === txn.id && (
+              <tr className="border-b border-slate-100 bg-slate-50">
+                <td colSpan={canEdit ? 6 : 5} className="px-4 py-3">
+                  <AttachmentsSection entityType="bank_transaction" entityId={txn.id} />
+                </td>
+              </tr>
+            )}
+            </Fragment>
           ))}
           {txns.length === 0 && (
             <tr>

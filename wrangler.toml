@@ -1,0 +1,8 @@
+name = "lseite-erp"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-09-05"
+
+# No nodejs_compat flag needed — functions/api/*.js were written against
+# the Workers runtime's own Web APIs (fetch, Response, crypto.subtle,
+# btoa) rather than Node's Buffer/crypto module, so there's nothing here
+# that needs the Node compatibility shim.

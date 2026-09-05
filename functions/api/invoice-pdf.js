@@ -1,28 +1,25 @@
 import { createClient } from '@supabase/supabase-js'
-import { buildInvoicePdf } from '../lib/invoicePdf.js'
+import { buildInvoicePdf } from '../../lib/invoicePdf.js'
 
 // Uses the anon key + the caller's own access token (forwarded from the
 // browser's Supabase session), never the service-role key — RLS applies
 // exactly as it would for the logged-in user, so this endpoint can never
 // see another company's invoice.
-export default async function handler(req, res) {
-  const id = req.query?.id ?? new URL(req.url, 'http://x').searchParams.get('id')
+export async function onRequestGet(context) {
+  const { request, env } = context
+  const id = new URL(request.url).searchParams.get('id')
   if (!id) {
-    res.status(400).json({ error: 'Missing invoice id' })
-    return
+    return Response.json({ error: 'Missing invoice id' }, { status: 400 })
   }
 
-  const authHeader = req.headers.authorization
+  const authHeader = request.headers.get('Authorization')
   if (!authHeader) {
-    res.status(401).json({ error: 'Missing Authorization header' })
-    return
+    return Response.json({ error: 'Missing Authorization header' }, { status: 401 })
   }
 
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-    { global: { headers: { Authorization: authHeader } } }
-  )
+  const supabase = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
+    global: { headers: { Authorization: authHeader } },
+  })
 
   const { data: invoice, error: invoiceError } = await supabase
     .from('invoices')
@@ -30,8 +27,7 @@ export default async function handler(req, res) {
     .eq('id', id)
     .single()
   if (invoiceError || !invoice) {
-    res.status(404).json({ error: 'Invoice not found' })
-    return
+    return Response.json({ error: 'Invoice not found' }, { status: 404 })
   }
 
   const { data: lineItems, error: lineError } = await supabase
@@ -40,8 +36,7 @@ export default async function handler(req, res) {
     .eq('invoice_id', id)
     .order('created_at')
   if (lineError) {
-    res.status(500).json({ error: lineError.message })
-    return
+    return Response.json({ error: lineError.message }, { status: 500 })
   }
 
   const { data: company, error: companyError } = await supabase
@@ -50,13 +45,16 @@ export default async function handler(req, res) {
     .eq('id', invoice.company_id)
     .single()
   if (companyError || !company) {
-    res.status(404).json({ error: 'Company not found' })
-    return
+    return Response.json({ error: 'Company not found' }, { status: 404 })
   }
 
   const pdfBytes = await buildInvoicePdf({ invoice, lineItems, company })
 
-  res.setHeader('Content-Type', 'application/pdf')
-  res.setHeader('Content-Disposition', `attachment; filename="${invoice.invoice_number.replace(/\//g, '-')}.pdf"`)
-  res.status(200).send(Buffer.from(pdfBytes))
+  return new Response(pdfBytes, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${invoice.invoice_number.replace(/\//g, '-')}.pdf"`,
+    },
+  })
 }

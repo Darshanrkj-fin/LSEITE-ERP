@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { supabase } from '../../lib/supabaseClient'
 import { useAuth } from '../../context/AuthContext'
+import { AttachmentsSection } from '../AttachmentsSection'
 
 const today = () => new Date().toISOString().slice(0, 10)
 const emptyTimesheet = { employee_id: '', task_id: '', work_date: today(), hours: '', billable: true, billing_rate: '', cost_rate: '' }
@@ -521,6 +522,10 @@ export function ProjectDetail() {
           </button>
         </form>
       )}
+
+      <div className="mt-6 border-t border-line pt-4">
+        <AttachmentsSection entityType="project" entityId={project.id} />
+      </div>
     </div>
   )
 }

@@ -46,10 +46,22 @@ export function AuthProvider({ children }) {
 
   // No signUp — accounts are created by an admin directly in the Supabase
   // dashboard (see the note in supabase/schema.sql), not self-service.
-  const signIn = (email, password) =>
-    supabase.auth.signInWithPassword({ email, password })
+  const signIn = async (email, password) => {
+    const result = await supabase.auth.signInWithPassword({ email, password })
+    if (!result.error) {
+      // Fire-and-forget: a logging failure shouldn't block sign-in.
+      supabase.rpc('log_auth_event', { p_event: 'login' })
+    }
+    return result
+  }
 
-  const signOut = () => supabase.auth.signOut()
+  // Supabase Auth keeps no logout record at all, so this has to be logged
+  // explicitly before the session is invalidated — log_auth_event() needs
+  // a still-valid auth.uid().
+  const signOut = async () => {
+    await supabase.rpc('log_auth_event', { p_event: 'logout' })
+    return supabase.auth.signOut()
+  }
 
   const value = {
     session,

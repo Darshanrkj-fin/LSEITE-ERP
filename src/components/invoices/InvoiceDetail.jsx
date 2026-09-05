@@ -4,6 +4,7 @@ import { supabase } from '../../lib/supabaseClient'
 import { useAuth } from '../../context/AuthContext'
 import { PaymentsSection } from './PaymentsSection'
 import { CreditDebitNoteForm } from './CreditDebitNoteForm'
+import { AttachmentsSection } from '../AttachmentsSection'
 
 const LABELS = {
   sales: { party: 'Customer', noteAction: 'Cancel Invoice', noteDoc: 'credit note', partialAction: 'Issue Partial Credit Note' },
@@ -347,6 +348,10 @@ export function InvoiceDetail({ type, basePath }) {
       )}
 
       <PaymentsSection invoice={invoice} />
+
+      <div className="mt-6 border-t border-line pt-4">
+        <AttachmentsSection entityType="invoice" entityId={invoice.id} />
+      </div>
     </div>
   )
 }

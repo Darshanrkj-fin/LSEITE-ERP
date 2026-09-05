@@ -12,6 +12,9 @@ export function RndTrial() {
   const [recipeDescription, setRecipeDescription] = useState('')
   const [resultingItemId, setResultingItemId] = useState('')
   const [outcomeNotes, setOutcomeNotes] = useState('')
+  const [rndProjectType, setRndProjectType] = useState('')
+  const [budget, setBudget] = useState('')
+  const [externalServicesCost, setExternalServicesCost] = useState('')
   const [consumptions, setConsumptions] = useState([{ ...emptyConsumption }])
 
   const [error, setError] = useState(null)
@@ -54,6 +57,9 @@ export function RndTrial() {
       p_resulting_item_id: resultingItemId || null,
       p_outcome_notes: outcomeNotes || null,
       p_consumptions: payloadConsumptions,
+      p_rnd_project_type: rndProjectType || null,
+      p_budget: budget === '' ? null : parseFloat(budget),
+      p_external_services_cost: externalServicesCost === '' ? null : parseFloat(externalServicesCost),
     })
     setSubmitting(false)
 
@@ -65,6 +71,9 @@ export function RndTrial() {
     setRecipeDescription('')
     setResultingItemId('')
     setOutcomeNotes('')
+    setRndProjectType('')
+    setBudget('')
+    setExternalServicesCost('')
     setConsumptions([{ ...emptyConsumption }])
   }
 
@@ -98,6 +107,45 @@ export function RndTrial() {
             className="w-full rounded border border-slate-300 px-3 py-2"
           />
         </label>
+
+        <div className="flex flex-wrap gap-3">
+          <label className="text-sm">
+            <span className="mb-1 block text-muted">Project type (optional)</span>
+            <select
+              value={rndProjectType}
+              onChange={(e) => setRndProjectType(e.target.value)}
+              className="rounded border border-slate-300 px-3 py-2"
+            >
+              <option value="">None</option>
+              <option value="food">Food</option>
+              <option value="consulting">Consulting</option>
+              <option value="process">Process</option>
+              <option value="internal">Internal</option>
+            </select>
+          </label>
+          <label className="text-sm">
+            <span className="mb-1 block text-muted">Budget</span>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={budget}
+              onChange={(e) => setBudget(e.target.value)}
+              className="w-28 rounded border border-slate-300 px-3 py-2"
+            />
+          </label>
+          <label className="text-sm">
+            <span className="mb-1 block text-muted">External services cost</span>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={externalServicesCost}
+              onChange={(e) => setExternalServicesCost(e.target.value)}
+              className="w-32 rounded border border-slate-300 px-3 py-2"
+            />
+          </label>
+        </div>
 
         <label className="block text-sm">
           <span className="mb-1 block text-muted">Aimed at finished good (optional)</span>

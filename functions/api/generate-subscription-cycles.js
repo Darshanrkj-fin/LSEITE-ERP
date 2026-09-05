@@ -1,10 +1,10 @@
 import { createClient } from '@supabase/supabase-js'
 
-// Same cron-protection pattern as api/check-gst-notifications.js: Vercel
-// Cron sends `Authorization: Bearer <CRON_SECRET>` when that env var is set.
-function isAuthorizedCronRequest(req) {
-  const secret = process.env.CRON_SECRET
-  return Boolean(secret) && req.headers.authorization === `Bearer ${secret}`
+// Same cron-protection pattern as functions/api/check-gst-notifications.js:
+// the companion cron Worker sends `Authorization: Bearer <CRON_SECRET>`.
+function isAuthorizedCronRequest(request, env) {
+  const secret = env.CRON_SECRET
+  return Boolean(secret) && request.headers.get('Authorization') === `Bearer ${secret}`
 }
 
 function addFrequency(dateStr, frequency) {
@@ -21,13 +21,13 @@ function addFrequency(dateStr, frequency) {
 // previous cycle's items as a starting point. Never auto-finalizes
 // anything — a draft is always reviewed by a person before it becomes a
 // real invoice (finalize_subscription_cycle()).
-export default async function handler(req, res) {
-  if (!isAuthorizedCronRequest(req)) {
-    res.status(401).json({ error: 'Unauthorized' })
-    return
+export async function onRequest(context) {
+  const { request, env } = context
+  if (!isAuthorizedCronRequest(request, env)) {
+    return Response.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
+  const supabase = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
     auth: { autoRefreshToken: false, persistSession: false },
   })
 
@@ -38,8 +38,7 @@ export default async function handler(req, res) {
     .select('id, frequency, start_date')
     .eq('status', 'active')
   if (subsError) {
-    res.status(500).json({ error: subsError.message })
-    return
+    return Response.json({ error: subsError.message }, { status: 500 })
   }
 
   const created = []
@@ -95,5 +94,5 @@ export default async function handler(req, res) {
     }
   }
 
-  res.status(200).json({ created, errors })
+  return Response.json({ created, errors })
 }

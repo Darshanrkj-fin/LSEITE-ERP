@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { useAuth } from '../context/AuthContext'
 import { downloadCsv } from '../lib/exportCsv'
 import { downloadTablePdf } from '../lib/exportPdf'
+import { AttachmentsSection } from '../components/AttachmentsSection'
 
 const today = () => new Date().toISOString().slice(0, 10)
 const emptyAsset = { category_id: '', name: '', asset_code: '', purchase_date: today(), cost: '', salvage_value: '0', funding_account_id: '' }
@@ -34,6 +35,7 @@ export function FixedAssets() {
   const [disposalProceeds, setDisposalProceeds] = useState('')
   const [disposalAccountId, setDisposalAccountId] = useState('')
   const [disposalDate, setDisposalDate] = useState(today())
+  const [expandedId, setExpandedId] = useState(null)
 
   const load = async () => {
     setLoading(true)
@@ -148,24 +150,41 @@ export function FixedAssets() {
         </thead>
         <tbody>
           {assets.map((a) => (
-            <tr key={a.asset_id} className="border-b border-slate-100">
-              <td className="py-2 pr-4">{a.name}</td>
-              <td className="py-2 pr-4">{a.category_name}</td>
-              <td className="py-2 pr-4">{a.purchase_date}</td>
-              <td className="py-2 pr-4">{a.cost}</td>
-              <td className="py-2 pr-4">{a.accumulated_depreciation}</td>
-              <td className="py-2 pr-4">{a.net_book_value}</td>
-              <td className="py-2 pr-4 capitalize">{a.status}</td>
-              {canEdit && (
+            <Fragment key={a.asset_id}>
+              <tr className="border-b border-slate-100">
                 <td className="py-2 pr-4">
-                  {a.status === 'active' && (
-                    <button onClick={() => startDispose(a)} className="text-sm text-clay hover:underline">
-                      Dispose
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => setExpandedId((id) => (id === a.asset_id ? null : a.asset_id))}
+                    className="text-left hover:underline"
+                  >
+                    {expandedId === a.asset_id ? '▾' : '▸'} {a.name}
+                  </button>
                 </td>
+                <td className="py-2 pr-4">{a.category_name}</td>
+                <td className="py-2 pr-4">{a.purchase_date}</td>
+                <td className="py-2 pr-4">{a.cost}</td>
+                <td className="py-2 pr-4">{a.accumulated_depreciation}</td>
+                <td className="py-2 pr-4">{a.net_book_value}</td>
+                <td className="py-2 pr-4 capitalize">{a.status}</td>
+                {canEdit && (
+                  <td className="py-2 pr-4">
+                    {a.status === 'active' && (
+                      <button onClick={() => startDispose(a)} className="text-sm text-clay hover:underline">
+                        Dispose
+                      </button>
+                    )}
+                  </td>
+                )}
+              </tr>
+              {expandedId === a.asset_id && (
+                <tr className="border-b border-slate-100 bg-slate-50">
+                  <td colSpan={canEdit ? 8 : 7} className="px-4 py-3">
+                    <AttachmentsSection entityType="fixed_asset" entityId={a.asset_id} />
+                  </td>
+                </tr>
               )}
-            </tr>
+            </Fragment>
           ))}
           {assets.length === 0 && (
             <tr>

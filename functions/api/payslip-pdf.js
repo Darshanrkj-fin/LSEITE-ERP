@@ -4,24 +4,21 @@ import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 // Same pattern as invoice-pdf.js: anon key + the caller's own access
 // token, never the service-role key — RLS applies exactly as it would
 // for the logged-in user, so this can never see another company's payslip.
-export default async function handler(req, res) {
-  const id = req.query?.id ?? new URL(req.url, 'http://x').searchParams.get('id')
+export async function onRequestGet(context) {
+  const { request, env } = context
+  const id = new URL(request.url).searchParams.get('id')
   if (!id) {
-    res.status(400).json({ error: 'Missing payroll run id' })
-    return
+    return Response.json({ error: 'Missing payroll run id' }, { status: 400 })
   }
 
-  const authHeader = req.headers.authorization
+  const authHeader = request.headers.get('Authorization')
   if (!authHeader) {
-    res.status(401).json({ error: 'Missing Authorization header' })
-    return
+    return Response.json({ error: 'Missing Authorization header' }, { status: 401 })
   }
 
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-    { global: { headers: { Authorization: authHeader } } }
-  )
+  const supabase = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
+    global: { headers: { Authorization: authHeader } },
+  })
 
   const { data: run, error: runError } = await supabase
     .from('payroll_runs')
@@ -29,8 +26,7 @@ export default async function handler(req, res) {
     .eq('id', id)
     .single()
   if (runError || !run) {
-    res.status(404).json({ error: 'Payroll run not found' })
-    return
+    return Response.json({ error: 'Payroll run not found' }, { status: 404 })
   }
 
   const { data: company, error: companyError } = await supabase
@@ -39,8 +35,7 @@ export default async function handler(req, res) {
     .eq('id', run.company_id)
     .single()
   if (companyError || !company) {
-    res.status(404).json({ error: 'Company not found' })
-    return
+    return Response.json({ error: 'Company not found' }, { status: 404 })
   }
 
   const pdfDoc = await PDFDocument.create()
@@ -88,7 +83,11 @@ export default async function handler(req, res) {
 
   const pdfBytes = await pdfDoc.save()
 
-  res.setHeader('Content-Type', 'application/pdf')
-  res.setHeader('Content-Disposition', `attachment; filename="payslip-${run.run_month}-${run.employees?.name ?? id}.pdf"`)
-  res.status(200).send(Buffer.from(pdfBytes))
+  return new Response(pdfBytes, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="payslip-${run.run_month}-${run.employees?.name ?? id}.pdf"`,
+    },
+  })
 }

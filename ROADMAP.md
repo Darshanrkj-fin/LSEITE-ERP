@@ -15,32 +15,31 @@ A cloud-hosted accounting system for a single company (multi-branch ready) that 
   produced as finished goods)
 - Subscriptions: recurring customer plans with variable items per cycle (not a fixed box)
 
-Every phase through Phase 34 is **built and live-tested** — see section 5 for Phases 1–19, section
+Every phase through Phase 37 is **built and live-tested** — see section 5 for Phases 1–19, section
 5b for Phases 20–24 (multi-branch schema readiness, quote management, expanded customer fields,
 advance/deposit payments, and a cohesive visual design system, drawn from a follow-up gap review),
 Phase 25 (bank statement PDF import, added outside the original phase plan at user request), and
-section 5d for Phases 26–34 (repo/platform hygiene, accounting period locking, AR/AP aging, party
+section 5d for Phases 26–37 (repo/platform hygiene, accounting period locking, AR/AP aging, party
 statements, units/warehouses schema, flexible customer-and-vendor parties, partial credit/debit
 notes, wastage write-offs, Swiggy/Zomato delivery settlement reconciliation, a full Consulting
 module with timesheet-based billing, TDS tracking, multi-bank-account identity with CSV statement
-import, fixed assets with straight-line depreciation, and HR foundations (departments,
-designations, attendance, leave) — the start of the `UPDATE.md` architecture review below).
+import, fixed assets with straight-line depreciation, HR foundations (departments, designations,
+attendance, leave), R&D trial generalization for cloud-kitchen/consulting project types, generic
+document attachments with an expanded audit log, and a Kitchen/Consulting/People/Compliance-tiled
+management dashboard — completing the `UPDATE.md` architecture review below).
 
-Phases 35–37 (section 5d) are **planned, not yet built** — a mapping of `UPDATE.md`'s broader
-architecture review (cloud kitchen + consulting as twin business lines, HR/payroll, TDS, fixed
-assets, Tally export, and more) onto this file's existing phase format, scoped additive-first per
-the decisions in section 5c. Only the "Later" items after section 5d remain fully out of scope, and
-only if the business's shape changes.
+Only the "Later" items after section 5d remain out of scope, and only if the business's shape
+changes.
 
 ## 1. Tech Stack (all free-tier)
 | Layer | Choice | Why |
 |---|---|---|
-| Frontend | React + Tailwind, hosted on Vercel | Free, no cold starts |
-| Backend | Vercel Serverless Functions (Node.js) | Same platform as frontend, free tier |
+| Frontend | React + Tailwind, hosted on Cloudflare Pages | Free, no cold starts |
+| Backend | Cloudflare Pages Functions (Workers runtime) | Same platform as frontend, free tier |
 | Database | Supabase (Postgres) | Free tier, built-in Auth |
 | Auth | Supabase Auth | Multi-user ready from day 1 |
 | PDF generation | `pdf-lib` | Free, open-source, already in use |
-| Scheduled jobs | Vercel Cron Jobs (free tier) | GST notification checker, subscription cycle generator (both built) |
+| Scheduled jobs | A companion Cloudflare Worker with Cron Triggers (free tier) | Pages Functions can't be triggered by Cron Triggers directly, so a tiny separate Worker (`cron-worker/`) pings the GST notification checker and subscription cycle generator on schedule |
 | Email | Resend (free tier) | Used only for the invoice "Email PDF" action (GST alerts moved to an in-app notification bell) |
 | GST calculation | Custom logic (no external API) | Free, full control |
 
@@ -898,33 +897,100 @@ re-litigated per phase below:
   constraint. No ledger involved in this phase, so no `trial_balance()` self-check was needed — full
   cleanup of all test rows and the throwaway user afterward.
 
-### Phase 35 — R&D Generalization
-- `rnd_trials` (Phase 10) already covers food-product recipe trials. Add an `rnd_project_type`
+### Phase 35 — R&D Generalization ✅
+- `rnd_trials` (Phase 10) already covers food-product recipe trials. Added an `rnd_project_type`
   (food/consulting/process/internal) column and optional `budget`/`external_services_cost` fields to
   the existing table, rather than introducing a parallel `rnd_projects`/`rnd_experiments`/
   `rnd_materials`/`rnd_labor` table set — the existing trial+consumption model already captures
-  materials cost per trial; this phase only widens what a trial can represent.
+  materials cost per trial; this phase only widens what a trial can represent. `post_rnd_trial()`'s
+  journal posting is unchanged — still only the raw-material consumption cost.
+- **Same arity gotcha as Phase 32**: adding the 3 new optional params changed `post_rnd_trial()`'s
+  declared signature, so `create or replace` alone would have left the old 5-arg version behind as an
+  ambiguous second overload. Fixed with `drop function if exists public.post_rnd_trial(date, text,
+  uuid, text, jsonb);` before the recreate — same fix pattern as `post_payment()` in Phase 32.
+- `RndTrial.jsx` got a "Project type" dropdown and "Budget"/"External services cost" numeric fields.
 - **Explicitly deferred**: dedicated R&D document/results attachment storage — folds into Phase 36's
   generic attachments instead of a separate R&D-only table.
+- Tested live end-to-end with throwaway data: purchased raw-material stock, then posted an R&D trial
+  with all 3 new fields populated — confirmed they're stored correctly (`rnd_project_type='food'`,
+  `budget=5000`, `external_services_cost=250`) and the journal entries still balance exactly as
+  before (₹60 = 3kg × ₹20, unchanged posting logic). Confirmed an invalid `rnd_project_type` value is
+  rejected by the check. Confirmed the OLD 5-argument call shape (no new params) still resolves
+  cleanly to the single new function with no ambiguous-overload error, and stores the 3 new fields as
+  null. Full cleanup of all test rows and the throwaway user afterward; `trial_balance()` confirmed
+  0=0.
 
-### Phase 36 — Generic Document Attachments & Expanded Audit Log
-- New `attachments` table (entity_type, entity_id, file_name, file_path, mime_type, uploaded_by,
-  company_id) backed by Supabase Storage with permission-checked signed downloads (never a public
-  bucket) — one generic mechanism used by invoices, purchase bills, expenses, R&D trials, fixed
-  assets, and bank reconciliations, rather than a bespoke upload field per module.
-- `audit_log` (Phase 14) already covers master-data edits. Extend the audited event set to the
-  login/logout and period-close/reopen events `UPDATE.md` §35 asks for, reusing the existing table
-  rather than a parallel logging system.
+### Phase 36 — Generic Document Attachments & Expanded Audit Log ✅
+- New `attachments` table (entity_type, entity_id, file_name, file_path, mime_type, file_size,
+  uploaded_by, company_id) backed by a private Supabase Storage bucket — the first use of Storage in
+  this project (Phase 16 deliberately avoided it for a cosmetic logo field; this is the actual
+  documented use case). `entity_type` is free text, no check-constrained enum, since this list will
+  keep growing — same reasoning as `journal_entries.reference_type` having none.
+- Objects are stored at `{company_id}/{entity_type}/{entity_id}/{uuid}-{filename}`. RLS on
+  `storage.objects` (via `storage.foldername(name)`) scopes read/write to the caller's own company,
+  and `createSignedUrl()` only succeeds if that RLS check passes — so "permission-checked signed
+  download" is enforced structurally, with no serverless function needed.
+- One generic `AttachmentsSection.jsx` component (upload/list/view/delete, admin+accountant write,
+  everyone read) wired into `InvoiceDetail.jsx`, `ProjectDetail.jsx`, and a per-row expandable toggle
+  in `FixedAssets.jsx` and `BankTransactions.jsx`.
+- **Explicitly out of scope this phase**: R&D trial attachments — there's no browsing/detail page
+  for past trials today (`RndTrial.jsx` is log-only), and building one just to hang a generic
+  attachments panel off it would be scope creep beyond what this phase is actually about.
+- `audit_log` (Phase 14) already covers master-data edits. Extended the audited event set:
+  `accounting_periods` close/reopen now flows through the existing generic `log_audit_change()`
+  trigger (free — no new plumbing). Login/logout needed a different mechanism since Supabase Auth
+  keeps no logout record at all — a new `log_auth_event(p_event)` RPC that `AuthContext.jsx` calls
+  explicitly right before/after the real sign-in/sign-out call (widened `audit_log.action`'s check
+  constraint to add `'login'`/`'logout'`).
+- Tested live end-to-end with throwaway data across three roles/two companies: uploaded a file to a
+  test project, confirmed the metadata row and signed-URL generation work for an authorized same-
+  company admin; confirmed a second company's admin gets 0 rows back from the metadata query AND a
+  rejected signed-URL request AND a rejected upload into the same folder (storage-level isolation,
+  not just table RLS); confirmed a same-company viewer can read the list but is rejected on both
+  upload and delete; confirmed `log_auth_event('login')` writes a correctly-shaped `audit_log` row
+  and an invalid event name is rejected; confirmed closing a test accounting period produces both an
+  `insert` and an `update` audit row with the right before/after `status` values. Full cleanup of all
+  test rows, storage objects, companies, and throwaway users afterward; `trial_balance()` confirmed
+  0=0.
 
-### Phase 37 — Management Dashboard Expansion
-- Extend the existing dashboard with the Kitchen/Consulting/People/Compliance tiles from
+### Phase 37 — Management Dashboard Expansion ✅
+- Extended the existing dashboard with the Kitchen/Consulting/People/Compliance tiles from
   `UPDATE.md` §41 that have real underlying data by this point (food cost %, wastage %, project
   margin, unbilled hours, GST/TDS/payroll review status) — a read-only aggregation layer over
   reports already built in the phases above, no new posting logic. Deliberately last, per
   `UPDATE.md` §51's own priority order: "do not prioritize visual redesign above accounting
   correctness."
+- One new function, `project_portfolio_summary()`: aggregates `project_profitability()` (Phase 31)
+  across every active project rather than changing that function's own signature for its existing
+  single-project caller (`ProjectDetail.jsx`). Margin is reported all-time, not month-scoped, since
+  `project_profitability()` has no date range to begin with — the tile is labeled accordingly.
+  Everything else (food cost %, wastage %, employee/attendance/payroll counts, GST, TDS) is computed
+  client-side from data that already existed.
+- **Deliberately not computed**: a single net GST-payable figure. The GST tile shows raw output-tax
+  and input-credit totals side by side, never subtracted — matching `GstSummary.jsx`'s own existing,
+  explicit restraint ("this deliberately stops short of a final net tax payable figure... have your
+  CA apply that set-off... before filing"). Netting requires a set-off order (IGST credit against
+  IGST liability first, etc.) that's a filing rule, not a fixed formula, so this stays a CA judgment
+  call rather than something the dashboard silently decides.
+- The existing "Low-stock items" and "Batches nearest expiry" lists moved under the new Kitchen
+  heading (they were already Kitchen-category data per `UPDATE.md` §41, just not labeled that way);
+  the original 3-card summary row and "Subscription cycles awaiting review" tile are unchanged.
+- Tested live end-to-end with a full realistic chain of throwaway data, verified as before/after
+  deltas (since the dashboard aggregates across the whole company, not just test rows): purchased
+  raw material → produced finished goods → sold some → wasted some, and confirmed food cost % =
+  40.0% and wastage % of COGS = 33.3% matched hand-calculated expectations exactly; created a
+  project with one billed and one unbilled timesheet, confirmed `project_portfolio_summary()`'s
+  active-project-count/revenue/cost/unbilled-hours deltas matched exactly (+1, +1000, +800, +3);
+  confirmed employee/payroll/attendance counts updated correctly after a payroll run; confirmed the
+  GST tile's separate output/input deltas matched the sales and purchase invoices' actual tax
+  amounts; confirmed a TDS-deducted payment showed up correctly as "pending deposit." Full cleanup
+  afterward — including re-learning the Phase 31 FK-ordering lesson firsthand (deleting a
+  project-linked sales invoice before its `timesheets` rows still fails on
+  `timesheets_invoice_id_fkey`; fixed by deleting/clearing the timesheets first) — `trial_balance()`
+  confirmed 0=0.
 
-Only the items below remain after Phase 37, and only if the business's shape changes.
+This completes the `UPDATE.md` architecture-review mapping (Phases 26–37). Only the items below
+remain, and only if the business's shape changes.
 
 ### Later (not in current scope)
 - Multi-branch UI: branch switcher and consolidated multi-branch reports. Phase 20 makes the
@@ -946,6 +1012,79 @@ Only the items below remain after Phase 37, and only if the business's shape cha
       `grant select, insert, update, delete on <table> to authenticated; grant all on <table> to
       service_role;` statements in `schema.sql`, or PostgREST won't expose them. Phase 26 above
       adopts that as standing practice for every `create table` from here on.
+- [x] **2026-09-05 — Migrated deployment from Vercel to Cloudflare Pages.** The 7 `api/*.js` Vercel
+      serverless functions were rewritten as Cloudflare Pages Functions under `functions/api/*.js`
+      (Web Fetch API style — `Request`/`Response`, `context.env` instead of `process.env` — rather
+      than Node's `(req, res)` handler shape). Same `/api/...` URL paths, so nothing on the frontend
+      changed. Two things needed real design decisions, not just a syntax port:
+      - **Cron Triggers**: Cloudflare Pages Functions can't be triggered by Cron Triggers directly
+        (Workers-only feature) — added a small standalone Worker, `cron-worker/`, whose only job is
+        to ping the two scheduled endpoints with the `CRON_SECRET` bearer token on its own Cron
+        Trigger schedule. The actual logic stays in the Pages Functions; the Worker is just the
+        trigger.
+      - **SPA routing**: initially added a `public/_redirects` file (`/* /index.html 200`), matching
+        the classic advice for SPA fallback — but this collided with Cloudflare's default
+        `.html`-stripping redirect behavior and produced a real redirect loop in `wrangler pages
+        dev` testing, not just the CLI's own overly-aggressive "infinite loop" validation warning.
+        Removed it entirely once testing showed classic Cloudflare Pages already serves `index.html`
+        for any unmatched path with zero config, as long as there's no top-level `404.html` — the
+        `_redirects` file was solving a problem that didn't exist and actively causing one.
+      - `node:crypto`/`Buffer` usage (the GST-notification-checker's page hash, the
+        email-PDF-attachment's base64 encoding) were rewritten against Web Crypto
+        (`crypto.subtle.digest`) and a hand-rolled chunked `btoa()` encoder respectively, rather than
+        enabling the `nodejs_compat` flag — avoids a platform-compat dependency for something this
+        small.
+      - Verified live via `wrangler pages dev`: confirmed all 7 endpoints route and return correct
+        status codes/bodies (including the cron-guard 401s and a GET-vs-POST-only 405 added to match
+        the original Vercel handlers' explicit method check, which Cloudflare doesn't enforce
+        automatically), confirmed the SPA fallback serves the app shell on a deep route with no
+        redirect, and confirmed the companion Worker's `wrangler deploy --dry-run` compiles cleanly.
+      - `vercel.json` and `api/` removed; added `wrangler.toml` (Pages project config),
+        `cron-worker/` (Worker + its own `wrangler.toml`), and `wrangler` as a dev dependency with
+        `npm run cf:dev` / `npm run cf:deploy` scripts. See `README.md` for the full deploy steps.
+- [x] **2026-09-05 — `users.role` is now a Postgres enum, not text+check.** Purely so the Supabase
+      Table Editor renders it as a dropdown when an admin promotes/demotes someone (still the only
+      way role is changed — no in-app UI for it). `current_user_role()` now explicitly casts
+      `role::text` on the way out, so every existing caller comparing it to a string literal
+      ('admin'/'accountant'/'viewer') is unaffected. Live migration hit two real Postgres gotchas
+      worth remembering for any future column-type change on a table with RLS: (1) an existing
+      `default` on the column must be dropped before the `alter column type`, not left in place —
+      Postgres tries to auto-cast the old default along with the column and fails
+      ("default for column... cannot be cast automatically"); (2) an existing `check` constraint
+      referencing that column must also be dropped *before* the type change, not after — its
+      expression has the comparison literals baked in at their original type, so leaving it attached
+      through the rewrite throws "operator does not exist: user_role = text". The `users_select` RLS
+      policy (the only one on this table) was dropped and recreated identically around the change
+      as a precaution. Verified live: all 5 real user rows kept their correct role values, an invalid
+      role value is now rejected structurally by the enum, and a normal update still succeeds.
+- [x] **2026-09-05 — Manage Users page can now change role/can_manage_users directly** (previously
+      Supabase Table Editor-only). New `update_user_role(p_user_id, p_role, p_can_manage_users)`
+      RPC — `users` still has no client-side UPDATE policy, so this SECURITY DEFINER function is the
+      only write path, redoing the caller's admin+`can_manage_users` check itself. Guards: a caller
+      can never edit their own row (would risk the last admin locking themselves out of user
+      management entirely, with no one left to undo it — still only fixable via the Table Editor);
+      `can_manage_users = true` is rejected unless `role = 'admin'` (it has no effect otherwise, so
+      silently allowing the combination would just be confusing); the target must belong to the
+      caller's own company. `ManageUsers.jsx` got a new list below the existing create/reset form —
+      inline role dropdown + checkbox per row, disabled on the caller's own row, admin-with-
+      `can_manage_users`-gated same as the rest of the page.
+  - **This surfaced a real, live-breaking regression from the role-enum migration above**:
+    `handle_new_auth_user()`'s `case when is_first_user then 'admin' else 'viewer' end` broke ALL
+    new sign-ups. A `CASE` expression over two unknown-typed string literals resolves its overall
+    type to `text`, not `unknown` — unlike a single bare literal, that does NOT pick up an
+    assignment cast to the target enum column automatically, and fails with "column is of type
+    user_role but expression is of type text". Caught by the very first throwaway-user creation in
+    this feature's own test, not by chance — but it means real sign-ups were broken for however
+    long between the previous entry's migration and this fix. Fixed by explicitly casting the whole
+    `CASE` expression to `::public.user_role`. Verified live afterward with a real
+    `auth.admin.createUser()` call, confirming the auto-created profile row gets `role='viewer'`
+    correctly again.
+  - Tested live end-to-end across 5 throwaway users (2 companies): confirmed a same-company
+    admin-with-`can_manage_users` can promote another user; confirmed self-edit, an invalid role
+    value, `can_manage_users=true` with a non-admin role, a caller who is admin but lacks
+    `can_manage_users`, a plain viewer caller, and a cross-company target are all rejected with
+    clear errors; confirmed a full promotion to admin+`can_manage_users` succeeds. Full cleanup
+    afterward; the 5 real user rows confirmed unchanged; `trial_balance()` confirmed 0=0.
 
 ## 7. Compliance Checkpoints (do not skip)
 - [ ] Have a CA review the chart of accounts after Week 1

@@ -1,13 +1,12 @@
 import { createClient } from '@supabase/supabase-js'
-import { createHash } from 'node:crypto'
 
-// Vercel Cron Jobs automatically send `Authorization: Bearer <CRON_SECRET>`
-// (sourced from the project's own CRON_SECRET env var) when invoking a
-// scheduled function — this is the documented way to stop the public
-// internet from triggering your cron endpoint directly.
-function isAuthorizedCronRequest(req) {
-  const secret = process.env.CRON_SECRET
-  return Boolean(secret) && req.headers.authorization === `Bearer ${secret}`
+// The companion cron Worker (see cron-worker/) sends
+// `Authorization: Bearer <CRON_SECRET>` on the schedule it's configured
+// with — this is what stops the public internet from triggering this
+// endpoint directly.
+function isAuthorizedCronRequest(request, env) {
+  const secret = env.CRON_SECRET
+  return Boolean(secret) && request.headers.get('Authorization') === `Bearer ${secret}`
 }
 
 // The CBIC site is a plain server-rendered page with no stable, documented
@@ -26,21 +25,29 @@ function extractVisibleText(html) {
     .trim()
 }
 
+// Web Crypto's digest() is native to the Workers runtime — no node:crypto
+// polyfill needed. Returns an ArrayBuffer; hex-encode it by hand since
+// there's no built-in helper for that on the Workers/browser crypto API.
+async function sha256Hex(text) {
+  const data = new TextEncoder().encode(text)
+  const digest = await crypto.subtle.digest('SHA-256', data)
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
 // Surfaced via the header's notification bell (see Layout.jsx), not email
 // — logging the change here is the only side effect of a positive check.
-export default async function handler(req, res) {
-  if (!isAuthorizedCronRequest(req)) {
-    res.status(401).json({ error: 'Unauthorized' })
-    return
+export async function onRequest(context) {
+  const { request, env } = context
+  if (!isAuthorizedCronRequest(request, env)) {
+    return Response.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const sourceUrl = process.env.GST_NOTIFICATION_SOURCE_URL
+  const sourceUrl = env.GST_NOTIFICATION_SOURCE_URL
   if (!sourceUrl) {
-    res.status(500).json({ error: 'GST_NOTIFICATION_SOURCE_URL is not configured' })
-    return
+    return Response.json({ error: 'GST_NOTIFICATION_SOURCE_URL is not configured' }, { status: 500 })
   }
 
-  const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
+  const supabase = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
     auth: { autoRefreshToken: false, persistSession: false },
   })
 
@@ -51,10 +58,9 @@ export default async function handler(req, res) {
       throw new Error(`HTTP ${pageResponse.status}`)
     }
     const html = await pageResponse.text()
-    pageHash = createHash('sha256').update(extractVisibleText(html)).digest('hex')
+    pageHash = await sha256Hex(extractVisibleText(html))
   } catch (err) {
-    res.status(502).json({ error: `Failed to fetch GST notification source: ${err.message}` })
-    return
+    return Response.json({ error: `Failed to fetch GST notification source: ${err.message}` }, { status: 502 })
   }
 
   const { data: lastEntry, error: lastEntryError } = await supabase
@@ -64,8 +70,7 @@ export default async function handler(req, res) {
     .limit(1)
     .maybeSingle()
   if (lastEntryError) {
-    res.status(500).json({ error: lastEntryError.message })
-    return
+    return Response.json({ error: lastEntryError.message }, { status: 500 })
   }
 
   // No prior check to compare against — this run just establishes the
@@ -76,9 +81,8 @@ export default async function handler(req, res) {
     .from('gst_notification_log')
     .insert({ notification_found: notificationFound, page_hash: pageHash })
   if (insertError) {
-    res.status(500).json({ error: insertError.message })
-    return
+    return Response.json({ error: insertError.message }, { status: 500 })
   }
 
-  res.status(200).json({ notificationFound })
+  return Response.json({ notificationFound })
 }

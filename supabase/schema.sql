@@ -43,11 +43,17 @@ create table public.companies (
 -- ============================================================
 -- users (profile row linked 1:1 to Supabase Auth's auth.users)
 -- ============================================================
+-- A native enum (not text + a check constraint) so the Supabase Table
+-- Editor renders role as a dropdown instead of a free-text field — this
+-- is still promoted only via the Table Editor (see the comment below),
+-- so that UI is the actual day-to-day interface for it.
+create type public.user_role as enum ('admin', 'accountant', 'viewer');
+
 create table public.users (
   id uuid primary key references auth.users (id) on delete cascade,
   company_id uuid references public.companies (id),
   full_name text,
-  role text not null default 'viewer' check (role in ('admin', 'accountant', 'viewer')),
+  role public.user_role not null default 'viewer',
   -- A second gate on top of role='admin', for the Manage Users feature
   -- only (create/reset accounts) — every other admin capability is
   -- unaffected. Deliberately a plain flag, not a generalized "levels"
@@ -61,8 +67,8 @@ create table public.users (
 -- Auto-create a profile row whenever someone signs up via Supabase Auth.
 -- The first person to ever sign up becomes admin (and can_manage_users,
 -- since they're the one setting up the company); everyone after is a
--- viewer until an admin promotes them (done via Supabase Table Editor for
--- now — no user-management screen in Week 1 scope).
+-- viewer until an admin promotes them (see Manage Users in the app, or
+-- the Supabase Table Editor).
 create or replace function public.handle_new_auth_user()
 returns trigger
 language plpgsql
@@ -73,10 +79,15 @@ declare
   is_first_user boolean;
 begin
   is_first_user := (select count(*) from public.users) = 0;
+  -- A CASE expression over two unknown-typed literals resolves to text,
+  -- not "unknown" — unlike a single bare literal, it does NOT pick up an
+  -- assignment cast to the target enum column automatically, and fails
+  -- with "column is of type user_role but expression is of type text".
+  -- The explicit ::public.user_role cast is required here.
   insert into public.users (id, role, can_manage_users)
   values (
     new.id,
-    case when is_first_user then 'admin' else 'viewer' end,
+    (case when is_first_user then 'admin' else 'viewer' end)::public.user_role,
     is_first_user
   );
   return new;
@@ -249,6 +260,9 @@ create constraint trigger journal_entries_balance_check
 -- ============================================================
 -- Row Level Security
 -- ============================================================
+-- Explicit ::text cast: role is a Postgres enum (public.user_role), not
+-- text, so every existing caller comparing current_user_role() = 'admin'
+-- etc. keeps working unchanged against a plain string return type.
 create function public.current_user_role()
 returns text
 language sql
@@ -256,7 +270,7 @@ stable
 security definer
 set search_path = public
 as $$
-  select role from public.users where id = auth.uid();
+  select role::text from public.users where id = auth.uid();
 $$;
 
 create function public.current_user_company_id()
@@ -1443,12 +1457,19 @@ grant execute on function public.post_production_entry(uuid, numeric, date, date
 -- production, but never creates finished-goods stock, and expenses the
 -- cost immediately (rnd_expense debit) rather than transferring it to
 -- finished_goods_inventory — a trial is R&D spend, not inventory creation.
-create function public.post_rnd_trial(
+-- If this function's signature ever changes again, add
+-- `drop function if exists public.post_rnd_trial(<old exact arg types>);`
+-- before the `create or replace` — otherwise Postgres leaves the old
+-- arity behind as a separate, ambiguous overload instead of replacing it.
+create or replace function public.post_rnd_trial(
   p_trial_date date,
   p_recipe_description text,
   p_resulting_item_id uuid,
   p_outcome_notes text,
-  p_consumptions jsonb
+  p_consumptions jsonb,
+  p_rnd_project_type text default null,
+  p_budget numeric default null,
+  p_external_services_cost numeric default null
 )
 returns public.rnd_trials
 language plpgsql
@@ -1480,6 +1501,10 @@ begin
     raise exception 'Resulting item not found in your company.';
   end if;
 
+  if p_rnd_project_type is not null and p_rnd_project_type not in ('food', 'consulting', 'process', 'internal') then
+    raise exception 'Invalid R&D project type: %', p_rnd_project_type;
+  end if;
+
   select id into v_rnd_expense_account_id from public.chart_of_accounts
     where company_id = v_company_id and system_role = 'rnd_expense';
   select id into v_rm_inventory_account_id from public.chart_of_accounts
@@ -1488,8 +1513,18 @@ begin
     raise exception 'Missing system ledger account(s) for this company.';
   end if;
 
-  insert into public.rnd_trials (company_id, trial_date, recipe_description, resulting_item_id, outcome_notes, entry_group_id)
-  values (v_company_id, p_trial_date, p_recipe_description, p_resulting_item_id, p_outcome_notes, v_entry_group)
+  -- rnd_project_type/budget/external_services_cost are informational only
+  -- (this phase only widens what a trial can represent) — the journal
+  -- posting below is unchanged, still just the raw-material consumption
+  -- cost computed from p_consumptions.
+  insert into public.rnd_trials (
+    company_id, trial_date, recipe_description, resulting_item_id, outcome_notes, entry_group_id,
+    rnd_project_type, budget, external_services_cost
+  )
+  values (
+    v_company_id, p_trial_date, p_recipe_description, p_resulting_item_id, p_outcome_notes, v_entry_group,
+    p_rnd_project_type, p_budget, p_external_services_cost
+  )
   returning * into v_trial;
 
   for v_line in select * from jsonb_array_elements(p_consumptions)
@@ -1520,7 +1555,7 @@ begin
 end;
 $$;
 
-grant execute on function public.post_rnd_trial(date, text, uuid, text, jsonb) to authenticated;
+grant execute on function public.post_rnd_trial(date, text, uuid, text, jsonb, text, numeric, numeric) to authenticated;
 
 -- ============================================================
 -- Phase 11: Custom/Bespoke Order Costing
@@ -1592,30 +1627,6 @@ create table public.payments (
 );
 
 create index payments_invoice_idx on public.payments (invoice_id);
-
--- Outstanding balance per invoice — cancelled payments don't count, hence
--- filtering in the JOIN condition (not a WHERE clause, which would also
--- drop invoices with zero payments since a left-joined NULL never equals
--- 'posted'). `security_invoker = true` — see item_current_stock above for
--- why this is required, not optional, on every view here.
--- Redefined again in the Phase 23 section below (after customer_advances
--- exists) to also fold in applied advances — kept as the original
--- payments-only definition here since customer_advances can't exist yet
--- this early in a fresh top-to-bottom deploy.
-create view public.invoice_payment_status
-with (security_invoker = true) as
-select
-  i.id as invoice_id,
-  i.company_id,
-  i.type,
-  i.invoice_number,
-  i.grand_total,
-  coalesce(sum(p.amount), 0) as amount_paid,
-  i.grand_total - coalesce(sum(p.amount), 0) as balance_due
-from public.invoices i
-left join public.payments p on p.invoice_id = i.id and p.status = 'posted'
-where i.status = 'posted'
-group by i.id;
 
 -- bank_transactions — manually entered lines from the actual bank
 -- statement (no bank API integration — CLAUDE.md free-tier/no-paid-API
@@ -1702,13 +1713,12 @@ create policy bank_transactions_delete on public.bank_transactions
 -- bank account; blocks overpayment past the invoice's remaining balance;
 -- inserts the payment; posts the two matching journal_entries legs
 -- (sales: debit bank account / credit Accounts Receivable — purchase:
--- debit Accounts Payable / credit bank account).
--- Adding p_tds_section (Phase 32) changes this function's declared arity,
--- so `create or replace` alone would leave the old 6-arg version behind
--- as a separate overload (ambiguous-call risk) rather than replacing it —
--- the old signature must be dropped explicitly first.
-drop function if exists public.post_payment(uuid, uuid, numeric, date, text, text);
-
+-- debit Accounts Payable / credit bank account). p_tds_section is
+-- optional TDS deduction on a purchase payment (see below). If this
+-- function's signature ever changes again, add
+-- `drop function if exists public.post_payment(<old exact arg types>);`
+-- before the `create or replace` — otherwise Postgres leaves the old
+-- arity behind as a separate, ambiguous overload instead of replacing it.
 create or replace function public.post_payment(
   p_invoice_id uuid,
   p_bank_account_id uuid,
@@ -3428,30 +3438,6 @@ $$;
 
 grant execute on function public.refund_customer_advance(uuid) to authenticated;
 
--- Redefines invoice_payment_status (originally created earlier in this
--- file, payments-only) to also fold in applied customer_advances — see
--- the comment on the original definition above for why.
-create or replace view public.invoice_payment_status
-with (security_invoker = true) as
-select
-  i.id as invoice_id,
-  i.company_id,
-  i.type,
-  i.invoice_number,
-  i.grand_total,
-  coalesce(sum(p.amount), 0) + coalesce(adv.applied_amount, 0) as amount_paid,
-  i.grand_total - coalesce(sum(p.amount), 0) - coalesce(adv.applied_amount, 0) as balance_due
-from public.invoices i
-left join public.payments p on p.invoice_id = i.id and p.status = 'posted'
-left join (
-  select applied_invoice_id, sum(amount) as applied_amount
-  from public.customer_advances
-  where status = 'applied'
-  group by applied_invoice_id
-) adv on adv.applied_invoice_id = i.id
-where i.status = 'posted'
-group by i.id, adv.applied_amount;
-
 -- ============================================================
 -- Phase 26 — Repository & Platform Hygiene
 -- No new tables. Supabase requires explicit Postgres grants for
@@ -4043,15 +4029,20 @@ $$;
 
 grant execute on function public.post_manual_credit_debit_note(uuid, text, jsonb) to authenticated;
 
--- Redefines invoice_payment_status again (see the two comments above this
--- one) to also fold in credit/debit notes. A manual partial note leaves
--- the invoice status='posted' (unlike a full cancel_invoice(), which
--- flips status to 'cancelled' and drops out of this view's own filter
--- entirely) — so without this, a partially-credited invoice would still
--- show its full original balance due, silently overstating AR aging
--- (Phase 27) and the Paid/Partially Paid label (this phase) by exactly
--- the credited amount.
-create or replace view public.invoice_payment_status
+-- Outstanding balance per invoice, folding in every offset a posted
+-- invoice can have: cash/bank payments, applied customer advances, and
+-- credit/debit notes. Cancelled payments don't count, hence filtering in
+-- the JOIN condition (not a WHERE clause, which would also drop invoices
+-- with zero payments since a left-joined NULL never equals 'posted').
+-- `security_invoker = true` — see item_current_stock above for why this
+-- is required, not optional, on every view here. A manual partial
+-- credit/debit note leaves the invoice status='posted' (unlike a full
+-- cancel_invoice(), which flips status to 'cancelled' and drops out of
+-- this view's own filter entirely) — without folding in credit_notes
+-- here, a partially-credited invoice would still show its full original
+-- balance due, silently overstating AR aging and the Paid/Partially Paid
+-- label by exactly the credited amount.
+create view public.invoice_payment_status
 with (security_invoker = true) as
 select
   i.id as invoice_id,
@@ -5382,3 +5373,243 @@ create policy leave_delete on public.leave
     company_id = public.current_user_company_id()
     and public.current_user_role() in ('admin', 'accountant')
   );
+
+-- ============================================================
+-- Phase 35 — R&D Generalization
+-- Widens what a trial can represent rather than introducing a parallel
+-- rnd_projects/rnd_experiments/rnd_materials/rnd_labor table set — the
+-- existing trial+consumption model (Phase 10) already captures materials
+-- cost per trial. Nullable, additive — existing trials and post_rnd_trial()
+-- callers that don't pass the new params are unaffected.
+-- ============================================================
+
+alter table public.rnd_trials add column rnd_project_type text
+  check (rnd_project_type is null or rnd_project_type in ('food', 'consulting', 'process', 'internal'));
+alter table public.rnd_trials add column budget numeric(14, 2) check (budget is null or budget >= 0);
+alter table public.rnd_trials add column external_services_cost numeric(14, 2)
+  check (external_services_cost is null or external_services_cost >= 0);
+
+-- ============================================================
+-- Phase 36 — Generic Document Attachments & Expanded Audit Log
+-- One generic attachments mechanism (metadata table + a private Storage
+-- bucket) rather than a bespoke upload field per module, used today by
+-- invoices, projects, fixed assets, and bank transactions. entity_type is
+-- free text (no check-constrained enum) since this list will keep growing
+-- — same reasoning as journal_entries.reference_type having none.
+-- ============================================================
+
+create table public.attachments (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  entity_type text not null,
+  entity_id uuid not null,
+  file_name text not null,
+  file_path text not null,
+  mime_type text,
+  file_size bigint,
+  uploaded_by uuid references public.users (id),
+  created_at timestamptz not null default now()
+);
+
+create index attachments_entity_idx on public.attachments (entity_type, entity_id);
+
+grant select, insert, update, delete on public.attachments to authenticated;
+grant all on public.attachments to service_role;
+
+alter table public.attachments enable row level security;
+
+-- No update policy: an attachment row is immutable metadata — replacing a
+-- file means delete-then-re-upload, not editing a row in place.
+create policy attachments_select on public.attachments
+  for select using (company_id = public.current_user_company_id());
+create policy attachments_insert on public.attachments
+  for insert with check (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy attachments_delete on public.attachments
+  for delete using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+
+-- Private bucket (public=false) — every read goes through a signed URL
+-- that Storage only issues if the requester's RLS policy below passes, so
+-- "permission-checked download" is enforced structurally, no serverless
+-- function needed. 20MB/file is a sane default cap, not a compliance rule.
+insert into storage.buckets (id, name, public, file_size_limit)
+values ('attachments', 'attachments', false, 20971520)
+on conflict (id) do nothing;
+
+-- Objects are stored at "{company_id}/{entity_type}/{entity_id}/{filename}"
+-- — storage.foldername(name) splits that path, so RLS here can scope
+-- access per-company without a second lookup table. Mirrors the
+-- attachments_select/insert/delete policies above but written directly
+-- against storage.objects, since that's a separate table from
+-- public.attachments (that one is just our queryable metadata).
+create policy attachments_storage_select on storage.objects
+  for select using (
+    bucket_id = 'attachments'
+    and (storage.foldername(name))[1] = public.current_user_company_id()::text
+  );
+create policy attachments_storage_insert on storage.objects
+  for insert with check (
+    bucket_id = 'attachments'
+    and (storage.foldername(name))[1] = public.current_user_company_id()::text
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy attachments_storage_delete on storage.objects
+  for delete using (
+    bucket_id = 'attachments'
+    and (storage.foldername(name))[1] = public.current_user_company_id()::text
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+
+-- Expanded audit log: accounting_periods close/reopen now audited too,
+-- reusing the existing generic trigger (Phase 14) — no new plumbing.
+create trigger accounting_periods_audit after insert or update or delete on public.accounting_periods
+  for each row execute function public.log_audit_change();
+
+-- Login/logout: Supabase Auth keeps no logout record at all, so unlike
+-- every other audited event this can't be a DB trigger — the client must
+-- call this explicitly (see AuthContext.jsx) right before/after the
+-- actual sign-in/sign-out call.
+alter table public.audit_log drop constraint audit_log_action_check;
+alter table public.audit_log add constraint audit_log_action_check
+  check (action in ('insert', 'update', 'delete', 'login', 'logout'));
+
+create function public.log_auth_event(p_event text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated.';
+  end if;
+  if p_event not in ('login', 'logout') then
+    raise exception 'Invalid auth event: %', p_event;
+  end if;
+
+  insert into public.audit_log (company_id, table_name, record_id, action, changed_by_user)
+  values (public.current_user_company_id(), 'auth_session', auth.uid(), p_event, auth.uid());
+end;
+$$;
+
+grant execute on function public.log_auth_event(text) to authenticated;
+
+-- ============================================================
+-- Phase 37 — Management Dashboard Expansion
+-- A read-only aggregation layer over reports already built in earlier
+-- phases — no new posting logic. Not security definer, no explicit
+-- company_id filter needed: every table this touches already has RLS
+-- scoping select to the caller's own company (same pattern as
+-- ar_ap_aging()/cash_flow_summary()), and project_profitability() itself
+-- is likewise invoker-rights.
+-- ============================================================
+
+-- Aggregates project_profitability() (Phase 31) across every active
+-- project, rather than changing that function's own signature/behavior
+-- for its existing single-project callers (ProjectDetail.jsx). Margin is
+-- all-time, not month-scoped, because project_profitability() has no
+-- date range to begin with — the dashboard tile is labeled accordingly.
+-- unbilled_hours only counts billable+approved+not-yet-invoiced hours —
+-- the same three conditions post_project_invoice() itself requires
+-- before a timesheet entry can actually be billed.
+create function public.project_portfolio_summary()
+returns table (
+  active_project_count bigint,
+  total_revenue numeric,
+  total_cost numeric,
+  overall_margin_pct numeric,
+  unbilled_hours numeric
+)
+language sql
+stable
+as $$
+  with active as (
+    select id from public.projects where status = 'active'
+  ),
+  agg as (
+    select
+      coalesce(sum(pp.revenue), 0) as total_revenue,
+      coalesce(sum(pp.total_cost), 0) as total_cost
+    from active a
+    cross join lateral public.project_profitability(a.id) pp
+  ),
+  unbilled as (
+    select coalesce(sum(hours), 0) as unbilled_hours
+    from public.timesheets
+    where billable = true and approval_status = 'approved' and invoice_id is null
+  )
+  select
+    (select count(*) from active),
+    agg.total_revenue,
+    agg.total_cost,
+    case when agg.total_revenue > 0
+      then round((agg.total_revenue - agg.total_cost) / agg.total_revenue * 100, 2)
+      else null
+    end,
+    unbilled.unbilled_hours
+  from agg, unbilled;
+$$;
+
+grant execute on function public.project_portfolio_summary() to authenticated;
+
+-- ============================================================
+-- Role/can_manage_users management from within the app
+-- users has no client-side UPDATE policy (see the comment above
+-- users_select) — this RPC is the only way to change either field,
+-- redoing the same admin+can_manage_users authorization check RLS would
+-- have done. A caller can never change their own row here (would let the
+-- last admin accidentally lock themselves out of user management with no
+-- one left who can undo it) — that still has to go through the Supabase
+-- Table Editor, same as before.
+-- ============================================================
+
+create function public.update_user_role(p_user_id uuid, p_role text, p_can_manage_users boolean)
+returns public.users
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_caller_company_id uuid;
+  v_updated public.users;
+begin
+  v_caller_company_id := public.current_user_company_id();
+  if v_caller_company_id is null
+     or public.current_user_role() <> 'admin'
+     or not exists (select 1 from public.users where id = auth.uid() and can_manage_users) then
+    raise exception 'Not authorized to manage users.';
+  end if;
+
+  if p_user_id = auth.uid() then
+    raise exception 'You cannot change your own role or permissions here — ask another admin, or use the Supabase Table Editor.';
+  end if;
+
+  if p_role not in ('admin', 'accountant', 'viewer') then
+    raise exception 'Invalid role: %', p_role;
+  end if;
+
+  if p_can_manage_users and p_role <> 'admin' then
+    raise exception 'can_manage_users only has any effect for an admin — set role to admin first.';
+  end if;
+
+  if not exists (
+    select 1 from public.users where id = p_user_id and company_id = v_caller_company_id
+  ) then
+    raise exception 'User not found in your company.';
+  end if;
+
+  update public.users
+    set role = p_role::public.user_role, can_manage_users = p_can_manage_users
+    where id = p_user_id
+    returning * into v_updated;
+
+  return v_updated;
+end;
+$$;
+
+grant execute on function public.update_user_role(uuid, text, boolean) to authenticated;
