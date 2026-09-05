@@ -50,6 +50,9 @@ import { BankAccounts } from './pages/BankAccounts'
 import { AssetCategories } from './pages/AssetCategories'
 import { FixedAssets } from './pages/FixedAssets'
 import { DepreciationRuns } from './pages/DepreciationRuns'
+import { Departments } from './pages/Departments'
+import { Attendance } from './pages/Attendance'
+import { Leave } from './pages/Leave'
 
 function App() {
   return (
@@ -108,6 +111,9 @@ function App() {
         <Route path="/asset-categories" element={<AssetCategories />} />
         <Route path="/fixed-assets" element={<FixedAssets />} />
         <Route path="/depreciation-runs" element={<DepreciationRuns />} />
+        <Route path="/departments" element={<Departments />} />
+        <Route path="/attendance" element={<Attendance />} />
+        <Route path="/leave" element={<Leave />} />
         <Route path="/change-password" element={<ChangePassword />} />
         <Route path="/manage-users" element={<ManageUsers />} />
       </Route>

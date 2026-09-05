@@ -2,13 +2,15 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { useAuth } from '../context/AuthContext'
 
-const emptyEmployee = { name: '', employee_code: '', join_date: '', monthly_gross_salary: '', status: 'active' }
+const emptyEmployee = { name: '', employee_code: '', join_date: '', monthly_gross_salary: '', status: 'active', department_id: '', designation_id: '' }
 
 export function EmployeeMaster() {
   const { profile } = useAuth()
   const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
 
   const [employees, setEmployees] = useState([])
+  const [departments, setDepartments] = useState([])
+  const [designations, setDesignations] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -21,9 +23,15 @@ export function EmployeeMaster() {
 
   const load = async () => {
     setLoading(true)
-    const { data, error: fetchError } = await supabase.from('employees').select('*').order('name')
+    const [{ data, error: fetchError }, { data: deptRows }, { data: desigRows }] = await Promise.all([
+      supabase.from('employees').select('*, departments(name), designations(name)').order('name'),
+      supabase.from('departments').select('id, name').order('name'),
+      supabase.from('designations').select('id, name').order('name'),
+    ])
     if (fetchError) setError(fetchError.message)
     else setEmployees(data)
+    setDepartments(deptRows ?? [])
+    setDesignations(desigRows ?? [])
     setLoading(false)
   }
 
@@ -41,6 +49,8 @@ export function EmployeeMaster() {
       join_date: newEmployee.join_date,
       monthly_gross_salary: newEmployee.monthly_gross_salary,
       status: newEmployee.status,
+      department_id: newEmployee.department_id || null,
+      designation_id: newEmployee.designation_id || null,
       company_id: profile.company_id,
     })
     setAdding(false)
@@ -54,7 +64,13 @@ export function EmployeeMaster() {
 
   const startEdit = (emp) => {
     setEditingId(emp.id)
-    setEditEmployee({ ...emp, employee_code: emp.employee_code ?? '', monthly_gross_salary: String(emp.monthly_gross_salary) })
+    setEditEmployee({
+      ...emp,
+      employee_code: emp.employee_code ?? '',
+      monthly_gross_salary: String(emp.monthly_gross_salary),
+      department_id: emp.department_id ?? '',
+      designation_id: emp.designation_id ?? '',
+    })
   }
 
   const cancelEdit = () => setEditingId(null)
@@ -70,6 +86,8 @@ export function EmployeeMaster() {
         join_date: editEmployee.join_date,
         monthly_gross_salary: editEmployee.monthly_gross_salary,
         status: editEmployee.status,
+        department_id: editEmployee.department_id || null,
+        designation_id: editEmployee.designation_id || null,
       })
       .eq('id', id)
     setSavingEdit(false)
@@ -106,6 +124,8 @@ export function EmployeeMaster() {
           <tr className="border-b border-slate-200 text-left text-muted">
             <th className="py-2 pr-4">Name</th>
             <th className="py-2 pr-4">Code</th>
+            <th className="py-2 pr-4">Department</th>
+            <th className="py-2 pr-4">Designation</th>
             <th className="py-2 pr-4">Join date</th>
             <th className="py-2 pr-4">Monthly gross</th>
             <th className="py-2 pr-4">Status</th>
@@ -130,6 +150,34 @@ export function EmployeeMaster() {
                       onChange={(e) => setEditEmployee((f) => ({ ...f, employee_code: e.target.value }))}
                       className="w-full rounded border border-slate-300 px-2 py-1"
                     />
+                  </td>
+                  <td className="py-2 pr-4">
+                    <select
+                      value={editEmployee.department_id}
+                      onChange={(e) => setEditEmployee((f) => ({ ...f, department_id: e.target.value }))}
+                      className="rounded border border-slate-300 px-2 py-1"
+                    >
+                      <option value="">—</option>
+                      {departments.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.name}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="py-2 pr-4">
+                    <select
+                      value={editEmployee.designation_id}
+                      onChange={(e) => setEditEmployee((f) => ({ ...f, designation_id: e.target.value }))}
+                      className="rounded border border-slate-300 px-2 py-1"
+                    >
+                      <option value="">—</option>
+                      {designations.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.name}
+                        </option>
+                      ))}
+                    </select>
                   </td>
                   <td className="py-2 pr-4">
                     <input
@@ -176,6 +224,8 @@ export function EmployeeMaster() {
                 <>
                   <td className="py-2 pr-4">{emp.name}</td>
                   <td className="py-2 pr-4">{emp.employee_code || '—'}</td>
+                  <td className="py-2 pr-4 text-muted">{emp.departments?.name || '—'}</td>
+                  <td className="py-2 pr-4 text-muted">{emp.designations?.name || '—'}</td>
                   <td className="py-2 pr-4">{emp.join_date}</td>
                   <td className="py-2 pr-4">{emp.monthly_gross_salary}</td>
                   <td className="py-2 pr-4 capitalize">{emp.status}</td>
@@ -195,7 +245,7 @@ export function EmployeeMaster() {
           ))}
           {employees.length === 0 && (
             <tr>
-              <td colSpan={6} className="py-4 text-muted">
+              <td colSpan={8} className="py-4 text-muted">
                 No employees yet.
               </td>
             </tr>
@@ -221,6 +271,36 @@ export function EmployeeMaster() {
               onChange={(e) => setNewEmployee((f) => ({ ...f, employee_code: e.target.value }))}
               className="rounded border border-slate-300 px-3 py-2"
             />
+          </label>
+          <label className="text-sm">
+            <span className="mb-1 block text-muted">Department</span>
+            <select
+              value={newEmployee.department_id}
+              onChange={(e) => setNewEmployee((f) => ({ ...f, department_id: e.target.value }))}
+              className="rounded border border-slate-300 px-3 py-2"
+            >
+              <option value="">None</option>
+              {departments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="text-sm">
+            <span className="mb-1 block text-muted">Designation</span>
+            <select
+              value={newEmployee.designation_id}
+              onChange={(e) => setNewEmployee((f) => ({ ...f, designation_id: e.target.value }))}
+              className="rounded border border-slate-300 px-3 py-2"
+            >
+              <option value="">None</option>
+              {designations.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
           </label>
           <label className="text-sm">
             <span className="mb-1 block text-muted">Join date</span>

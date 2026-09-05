@@ -90,6 +90,9 @@ const navGroups = [
   {
     label: 'Payroll',
     items: [
+      { to: '/departments', label: 'Departments & Designations' },
+      { to: '/attendance', label: 'Attendance' },
+      { to: '/leave', label: 'Leave' },
       { to: '/run-payroll', label: 'Run Payroll' },
       { to: '/payroll-register', label: 'Payroll Register' },
     ],

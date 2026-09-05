@@ -5232,3 +5232,153 @@ as $$
 $$;
 
 grant execute on function public.fixed_asset_register() to authenticated;
+
+-- ============================================================
+-- Phase 34 — HR Foundations & Payroll Enhancements
+-- Attendance/leave are recorded for reporting only — post_payroll_run()
+-- itself is untouched, and still produces the same fixed-gross-plus-
+-- manual-deductions payslip it always has. A configurable salary-
+-- component/statutory-calculation engine is a real, separate need
+-- flagged rather than built speculatively (see ROADMAP.md) — today's
+-- approach already lets a human enter the correct PF/ESI/professional-tax
+-- figure each month, with a CA's review per CLAUDE.md section 8.
+-- ============================================================
+
+create table public.departments (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  name text not null,
+  created_at timestamptz not null default now(),
+  unique (company_id, name)
+);
+
+grant select, insert, update, delete on public.departments to authenticated;
+grant all on public.departments to service_role;
+
+alter table public.departments enable row level security;
+
+create policy departments_select on public.departments
+  for select using (company_id = public.current_user_company_id());
+create policy departments_write on public.departments
+  for insert with check (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy departments_update on public.departments
+  for update using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy departments_delete on public.departments
+  for delete using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+
+create table public.designations (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  name text not null,
+  created_at timestamptz not null default now(),
+  unique (company_id, name)
+);
+
+grant select, insert, update, delete on public.designations to authenticated;
+grant all on public.designations to service_role;
+
+alter table public.designations enable row level security;
+
+create policy designations_select on public.designations
+  for select using (company_id = public.current_user_company_id());
+create policy designations_write on public.designations
+  for insert with check (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy designations_update on public.designations
+  for update using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy designations_delete on public.designations
+  for delete using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+
+-- Nullable, additive — existing employees and every current payroll path
+-- are unaffected until a department/designation is actually chosen.
+alter table public.employees add column department_id uuid references public.departments (id);
+alter table public.employees add column designation_id uuid references public.designations (id);
+
+-- One row per employee per day — plain admin/accountant-writable master
+-- data, same trust level as timesheets (Phase 31), not SECURITY DEFINER-
+-- gated, since nothing here posts to the ledger.
+create table public.attendance (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  employee_id uuid not null references public.employees (id),
+  work_date date not null,
+  status text not null check (status in ('present', 'absent', 'half_day')),
+  created_at timestamptz not null default now(),
+  unique (employee_id, work_date)
+);
+
+grant select, insert, update, delete on public.attendance to authenticated;
+grant all on public.attendance to service_role;
+
+alter table public.attendance enable row level security;
+
+create policy attendance_select on public.attendance
+  for select using (company_id = public.current_user_company_id());
+create policy attendance_write on public.attendance
+  for insert with check (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy attendance_update on public.attendance
+  for update using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy attendance_delete on public.attendance
+  for delete using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+
+create table public.leave (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  employee_id uuid not null references public.employees (id),
+  leave_type text not null check (leave_type in ('sick', 'casual', 'earned', 'unpaid', 'other')),
+  start_date date not null,
+  end_date date not null,
+  status text not null default 'pending' check (status in ('pending', 'approved', 'rejected')),
+  reason text,
+  created_at timestamptz not null default now(),
+  constraint leave_valid_range check (end_date >= start_date)
+);
+
+grant select, insert, update, delete on public.leave to authenticated;
+grant all on public.leave to service_role;
+
+alter table public.leave enable row level security;
+
+create policy leave_select on public.leave
+  for select using (company_id = public.current_user_company_id());
+create policy leave_write on public.leave
+  for insert with check (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy leave_update on public.leave
+  for update using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );
+create policy leave_delete on public.leave
+  for delete using (
+    company_id = public.current_user_company_id()
+    and public.current_user_role() in ('admin', 'accountant')
+  );

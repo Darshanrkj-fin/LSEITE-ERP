@@ -15,18 +15,18 @@ A cloud-hosted accounting system for a single company (multi-branch ready) that 
   produced as finished goods)
 - Subscriptions: recurring customer plans with variable items per cycle (not a fixed box)
 
-Every phase through Phase 33 is **built and live-tested** — see section 5 for Phases 1–19, section
+Every phase through Phase 34 is **built and live-tested** — see section 5 for Phases 1–19, section
 5b for Phases 20–24 (multi-branch schema readiness, quote management, expanded customer fields,
 advance/deposit payments, and a cohesive visual design system, drawn from a follow-up gap review),
 Phase 25 (bank statement PDF import, added outside the original phase plan at user request), and
-section 5d for Phases 26–33 (repo/platform hygiene, accounting period locking, AR/AP aging, party
+section 5d for Phases 26–34 (repo/platform hygiene, accounting period locking, AR/AP aging, party
 statements, units/warehouses schema, flexible customer-and-vendor parties, partial credit/debit
 notes, wastage write-offs, Swiggy/Zomato delivery settlement reconciliation, a full Consulting
 module with timesheet-based billing, TDS tracking, multi-bank-account identity with CSV statement
-import, and fixed assets with straight-line depreciation — the start of the `UPDATE.md` architecture
-review below).
+import, fixed assets with straight-line depreciation, and HR foundations (departments,
+designations, attendance, leave) — the start of the `UPDATE.md` architecture review below).
 
-Phases 34–37 (section 5d) are **planned, not yet built** — a mapping of `UPDATE.md`'s broader
+Phases 35–37 (section 5d) are **planned, not yet built** — a mapping of `UPDATE.md`'s broader
 architecture review (cloud kitchen + consulting as twin business lines, HR/payroll, TDS, fixed
 assets, Tally export, and more) onto this file's existing phase format, scoped additive-first per
 the decisions in section 5c. Only the "Later" items after section 5d remain fully out of scope, and
@@ -875,12 +875,15 @@ re-litigated per phase below:
   rejected. Full cleanup afterward — `trial_balance()` back to 0 = 0, `chart_of_accounts` back to 21
   rows, first cleanup pass clean (no residue mistakes this time).
 
-### Phase 34 — HR Foundations & Payroll Enhancements
-- New `departments`/`designations` tables; `employees` gains nullable `department_id`/
-  `designation_id` — additive columns, existing employee rows unaffected.
-- New `attendance`/`leave` tables (date-based, per employee) feeding the existing payroll run as
-  additional recorded inputs — the run itself still produces the same fixed-gross-plus-manual-
-  deductions payslip it does today; attendance/leave are recorded for reporting, not yet wired into
+### Phase 34 — HR Foundations & Payroll Enhancements ✅
+- New `departments`/`designations` tables (simple company-scoped lookup lists); `employees` gains
+  nullable `department_id`/`designation_id` — additive columns, existing employee rows unaffected.
+  `EmployeeMaster.jsx` gets the two new dropdowns; new `Departments.jsx` manages both lists.
+- New `attendance` (one row per employee per day, upserted on re-mark rather than duplicating) and
+  `leave` (date-range request with approve/reject) tables — recorded for reporting only, same trust
+  level as `timesheets` (Phase 31: plain admin/accountant CRUD, not SECURITY DEFINER-gated, since
+  nothing here posts to the ledger). `post_payroll_run()` is completely untouched — it still produces
+  the same fixed-gross-plus-manual-deductions payslip it always has; attendance/leave don't yet feed
   automatic salary calculation.
 - **Explicitly deferred**: the full configurable salary-component engine and statutory-calculation
   rebuild from `UPDATE.md` §24–25. Today's "fixed gross + manually-entered deductions" already lets
@@ -888,6 +891,12 @@ re-litigated per phase below:
   CLAUDE.md §8), and building a generalized rules engine before a second, structurally different
   payroll case actually exists would be speculative, against CLAUDE.md §5. Revisit if statutory
   rates change often enough that manual entry becomes the real pain point.
+- Tested live end-to-end with throwaway data: confirmed an employee correctly linked to a department
+  and designation; confirmed marking attendance twice for the same employee/date updates the one row
+  rather than creating a duplicate; confirmed a leave request defaults to pending and can be approved;
+  confirmed a leave request with an end date before its start date is rejected by the check
+  constraint. No ledger involved in this phase, so no `trial_balance()` self-check was needed — full
+  cleanup of all test rows and the throwaway user afterward.
 
 ### Phase 35 — R&D Generalization
 - `rnd_trials` (Phase 10) already covers food-product recipe trials. Add an `rnd_project_type`
