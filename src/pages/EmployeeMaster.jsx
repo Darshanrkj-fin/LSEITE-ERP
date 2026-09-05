@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { useAuth } from '../context/AuthContext'
 
-const emptyEmployee = { name: '', employee_code: '', join_date: '', monthly_gross_salary: '', status: 'active', department_id: '', designation_id: '' }
+const emptyEmployee = { name: '', employee_code: '', join_date: '', monthly_gross_salary: '', status: 'active', department_id: '', designation_id: '', user_id: '' }
 
 export function EmployeeMaster() {
   const { profile } = useAuth()
@@ -11,6 +11,7 @@ export function EmployeeMaster() {
   const [employees, setEmployees] = useState([])
   const [departments, setDepartments] = useState([])
   const [designations, setDesignations] = useState([])
+  const [companyUsers, setCompanyUsers] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -23,15 +24,17 @@ export function EmployeeMaster() {
 
   const load = async () => {
     setLoading(true)
-    const [{ data, error: fetchError }, { data: deptRows }, { data: desigRows }] = await Promise.all([
-      supabase.from('employees').select('*, departments(name), designations(name)').order('name'),
+    const [{ data, error: fetchError }, { data: deptRows }, { data: desigRows }, { data: userRows }] = await Promise.all([
+      supabase.from('employees').select('*, departments(name), designations(name), users(full_name)').order('name'),
       supabase.from('departments').select('id, name').order('name'),
       supabase.from('designations').select('id, name').order('name'),
+      supabase.from('users').select('id, full_name').order('full_name'),
     ])
     if (fetchError) setError(fetchError.message)
     else setEmployees(data)
     setDepartments(deptRows ?? [])
     setDesignations(desigRows ?? [])
+    setCompanyUsers(userRows ?? [])
     setLoading(false)
   }
 
@@ -51,6 +54,7 @@ export function EmployeeMaster() {
       status: newEmployee.status,
       department_id: newEmployee.department_id || null,
       designation_id: newEmployee.designation_id || null,
+      user_id: newEmployee.user_id || null,
       company_id: profile.company_id,
     })
     setAdding(false)
@@ -70,6 +74,7 @@ export function EmployeeMaster() {
       monthly_gross_salary: String(emp.monthly_gross_salary),
       department_id: emp.department_id ?? '',
       designation_id: emp.designation_id ?? '',
+      user_id: emp.user_id ?? '',
     })
   }
 
@@ -88,6 +93,7 @@ export function EmployeeMaster() {
         status: editEmployee.status,
         department_id: editEmployee.department_id || null,
         designation_id: editEmployee.designation_id || null,
+        user_id: editEmployee.user_id || null,
       })
       .eq('id', id)
     setSavingEdit(false)
@@ -129,6 +135,7 @@ export function EmployeeMaster() {
             <th className="py-2 pr-4">Join date</th>
             <th className="py-2 pr-4">Monthly gross</th>
             <th className="py-2 pr-4">Status</th>
+            <th className="py-2 pr-4">Linked user</th>
             {canEdit && <th className="py-2 pr-4">Actions</th>}
           </tr>
         </thead>
@@ -207,6 +214,20 @@ export function EmployeeMaster() {
                       <option value="inactive">inactive</option>
                     </select>
                   </td>
+                  <td className="py-2 pr-4">
+                    <select
+                      value={editEmployee.user_id}
+                      onChange={(e) => setEditEmployee((f) => ({ ...f, user_id: e.target.value }))}
+                      className="rounded border border-slate-300 px-2 py-1"
+                    >
+                      <option value="">None</option>
+                      {companyUsers.map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.full_name || u.id}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
                   <td className="space-x-2 py-2 pr-4">
                     <button
                       onClick={() => saveEdit(emp.id)}
@@ -229,6 +250,7 @@ export function EmployeeMaster() {
                   <td className="py-2 pr-4">{emp.join_date}</td>
                   <td className="py-2 pr-4">{emp.monthly_gross_salary}</td>
                   <td className="py-2 pr-4 capitalize">{emp.status}</td>
+                  <td className="py-2 pr-4 text-muted">{emp.users?.full_name || '—'}</td>
                   {canEdit && (
                     <td className="space-x-2 py-2 pr-4">
                       <button onClick={() => startEdit(emp)} className="text-sm text-ink hover:underline">
@@ -245,7 +267,7 @@ export function EmployeeMaster() {
           ))}
           {employees.length === 0 && (
             <tr>
-              <td colSpan={8} className="py-4 text-muted">
+              <td colSpan={9} className="py-4 text-muted">
                 No employees yet.
               </td>
             </tr>
@@ -323,6 +345,21 @@ export function EmployeeMaster() {
               onChange={(e) => setNewEmployee((f) => ({ ...f, monthly_gross_salary: e.target.value }))}
               className="w-32 rounded border border-slate-300 px-3 py-2"
             />
+          </label>
+          <label className="text-sm">
+            <span className="mb-1 block text-muted">Linked user account</span>
+            <select
+              value={newEmployee.user_id}
+              onChange={(e) => setNewEmployee((f) => ({ ...f, user_id: e.target.value }))}
+              className="rounded border border-slate-300 px-3 py-2"
+            >
+              <option value="">None</option>
+              {companyUsers.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.full_name || u.id}
+                </option>
+              ))}
+            </select>
           </label>
           <button
             type="submit"

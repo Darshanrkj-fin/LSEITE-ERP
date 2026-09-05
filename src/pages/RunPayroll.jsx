@@ -56,7 +56,7 @@ export function RunPayroll() {
     setInfo(null)
     setSubmitting(true)
 
-    const { data, error: postError } = await supabase.rpc('post_payroll_run', {
+    const { data: request, error: postError } = await supabase.rpc('submit_payroll_run', {
       p_employee_id: employeeId,
       p_run_month: `${month}-01`,
       p_gross_salary: parseFloat(grossSalary),
@@ -73,8 +73,15 @@ export function RunPayroll() {
       setError(postError.message)
       return
     }
-    setInfo(`Payroll posted for ${employees.find((e) => e.id === employeeId)?.name} — net pay ${data.net_pay}.`)
-    setLastRunId(data.id)
+
+    const employeeName = employees.find((e) => e.id === employeeId)?.name
+    if (request.status === 'pending') {
+      setInfo(`Submitted for approval (needs: ${request.approval_chain.join(', ')}). See Approvals.`)
+      setLastRunId(null)
+    } else {
+      setInfo(`Payroll posted for ${employeeName} — net pay ${netPay.toFixed(2)}.`)
+      setLastRunId(request.result_entity_id)
+    }
     setPf('0')
     setEsi('0')
     setPt('0')

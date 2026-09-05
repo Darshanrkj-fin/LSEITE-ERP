@@ -33,6 +33,7 @@ export function ProjectDetail() {
   const [invoiceAccountId, setInvoiceAccountId] = useState('')
   const [invoiceDate, setInvoiceDate] = useState(today())
   const [invoicing, setInvoicing] = useState(false)
+  const [info, setInfo] = useState(null)
 
   const load = async () => {
     setLoading(true)
@@ -154,8 +155,9 @@ export function ProjectDetail() {
   const handleInvoice = async (e) => {
     e.preventDefault()
     setError(null)
+    setInfo(null)
     setInvoicing(true)
-    const { error: rpcError } = await supabase.rpc('post_project_invoice', {
+    const { data: request, error: rpcError } = await supabase.rpc('submit_project_invoice', {
       p_project_id: id,
       p_invoice_date: invoiceDate,
       p_item_id: invoiceItemId,
@@ -166,6 +168,9 @@ export function ProjectDetail() {
     if (rpcError) {
       setError(rpcError.message)
       return
+    }
+    if (request.status === 'pending') {
+      setInfo(`Submitted for approval (needs: ${request.approval_chain.join(', ')}). See Approvals.`)
     }
     setSelectedTimesheets({})
     load()
@@ -187,6 +192,7 @@ export function ProjectDetail() {
       </p>
 
       {error && <p className="mb-4 text-sm text-clay">{error}</p>}
+      {info && <p className="mb-4 text-sm text-green-600">{info}</p>}
 
       {profitability && (
         <div className="mb-6 flex flex-wrap gap-4 text-sm">

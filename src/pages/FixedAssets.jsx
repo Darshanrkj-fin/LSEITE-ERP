@@ -27,6 +27,7 @@ export function FixedAssets() {
   const [accounts, setAccounts] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [info, setInfo] = useState(null)
 
   const [newAsset, setNewAsset] = useState(emptyAsset)
   const [submitting, setSubmitting] = useState(false)
@@ -58,8 +59,9 @@ export function FixedAssets() {
   const handleCapitalize = async (e) => {
     e.preventDefault()
     setError(null)
+    setInfo(null)
     setSubmitting(true)
-    const { error: rpcError } = await supabase.rpc('capitalize_fixed_asset', {
+    const { data: request, error: rpcError } = await supabase.rpc('submit_fixed_asset_capitalization', {
       p_category_id: newAsset.category_id,
       p_name: newAsset.name,
       p_asset_code: newAsset.asset_code || null,
@@ -73,6 +75,11 @@ export function FixedAssets() {
       setError(rpcError.message)
       return
     }
+    setInfo(
+      request.status === 'pending'
+        ? `Submitted for approval (needs: ${request.approval_chain.join(', ')}). See Approvals.`
+        : 'Capitalized.'
+    )
     setNewAsset(emptyAsset)
     load()
   }
@@ -134,6 +141,7 @@ export function FixedAssets() {
       </div>
 
       {error && <p className="mb-4 text-sm text-clay">{error}</p>}
+      {info && <p className="mb-4 text-sm text-green-600">{info}</p>}
 
       <table className="mb-6 w-full text-sm">
         <thead>

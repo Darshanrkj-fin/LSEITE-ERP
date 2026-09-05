@@ -65,6 +65,7 @@ const navGroups = [
       { to: '/asset-categories', label: 'Asset Categories' },
       { to: '/fixed-assets', label: 'Fixed Assets' },
       { to: '/depreciation-runs', label: 'Depreciation Runs' },
+      { to: '/approvals', label: 'Approvals' },
     ],
   },
   {
@@ -95,6 +96,7 @@ const navGroups = [
       { to: '/leave', label: 'Leave' },
       { to: '/run-payroll', label: 'Run Payroll' },
       { to: '/payroll-register', label: 'Payroll Register' },
+      { to: '/expense-claims', label: 'Expense Claims' },
     ],
   },
   {
@@ -104,6 +106,8 @@ const navGroups = [
       { to: '/accounting-periods', label: 'Accounting Periods' },
       { to: '/audit-log', label: 'Audit Log', requiresAdmin: true },
       { to: '/manage-users', label: 'Manage Users', requiresManageUsers: true },
+      { to: '/roles-permissions', label: 'Roles & Permissions', requiresManageUsers: true },
+      { to: '/access-requests', label: 'Access Requests' },
     ],
   },
 ]

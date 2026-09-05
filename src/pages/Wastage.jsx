@@ -20,6 +20,7 @@ export function Wastage() {
   const [reason, setReason] = useState(REASONS[0])
   const [wastageDate, setWastageDate] = useState(today())
   const [submitting, setSubmitting] = useState(false)
+  const [info, setInfo] = useState(null)
 
   const load = async () => {
     setLoading(true)
@@ -44,8 +45,9 @@ export function Wastage() {
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError(null)
+    setInfo(null)
     setSubmitting(true)
-    const { error: rpcError } = await supabase.rpc('post_wastage', {
+    const { data: request, error: rpcError } = await supabase.rpc('submit_wastage', {
       p_item_id: itemId,
       p_quantity: parseFloat(quantity),
       p_reason: reason,
@@ -55,6 +57,9 @@ export function Wastage() {
     if (rpcError) {
       setError(rpcError.message)
       return
+    }
+    if (request.status === 'pending') {
+      setInfo(`Submitted for approval (needs: ${request.approval_chain.join(', ')}). See Approvals.`)
     }
     setItemId('')
     setQuantity('')
@@ -73,6 +78,7 @@ export function Wastage() {
       </p>
 
       {error && <p className="mb-4 text-sm text-clay">{error}</p>}
+      {info && <p className="mb-4 text-sm text-green-600">{info}</p>}
 
       {canEdit && (
         <form onSubmit={handleSubmit} className="mb-6 flex flex-wrap items-end gap-3 rounded border border-line p-4">

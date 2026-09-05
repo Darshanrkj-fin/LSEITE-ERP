@@ -12,6 +12,8 @@ import { Quotes } from './pages/Quotes'
 import { SalesInvoices } from './pages/SalesInvoices'
 import { PurchaseInvoices } from './pages/PurchaseInvoices'
 import { ManageUsers } from './pages/ManageUsers'
+import { RolesPermissions } from './pages/RolesPermissions'
+import { Approvals } from './pages/Approvals'
 import { Inventory } from './pages/Inventory'
 import { BankTransactions } from './pages/BankTransactions'
 import { Reconciliation } from './pages/Reconciliation'
@@ -53,6 +55,8 @@ import { DepreciationRuns } from './pages/DepreciationRuns'
 import { Departments } from './pages/Departments'
 import { Attendance } from './pages/Attendance'
 import { Leave } from './pages/Leave'
+import { ExpenseClaims } from './pages/ExpenseClaims'
+import { AccessRequests } from './pages/AccessRequests'
 
 function App() {
   return (
@@ -114,8 +118,12 @@ function App() {
         <Route path="/departments" element={<Departments />} />
         <Route path="/attendance" element={<Attendance />} />
         <Route path="/leave" element={<Leave />} />
+        <Route path="/expense-claims" element={<ExpenseClaims />} />
+        <Route path="/access-requests" element={<AccessRequests />} />
         <Route path="/change-password" element={<ChangePassword />} />
         <Route path="/manage-users" element={<ManageUsers />} />
+        <Route path="/roles-permissions" element={<RolesPermissions />} />
+        <Route path="/approvals" element={<Approvals />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

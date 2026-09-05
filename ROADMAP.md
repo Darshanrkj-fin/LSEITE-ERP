@@ -28,7 +28,14 @@ attendance, leave), R&D trial generalization for cloud-kitchen/consulting projec
 document attachments with an expanded audit log, and a Kitchen/Consulting/People/Compliance-tiled
 management dashboard — completing the `UPDATE.md` architecture review below).
 
-Only the "Later" items after section 5d remain out of scope, and only if the business's shape
+Phases 38–46 (section 5e) are also **built and live-tested** — a new, separate enterprise RBAC
+initiative (13 named roles, multi-role-per-person, a permissions matrix, real RLS scoping for Own
+Records/Assigned Projects, and working approval workflows for fixed asset capitalization, payroll
+runs, purchase invoices, wastage, project/consulting invoicing, expense claims, and technology access
+requests), additive on top of everything above. Extending approval workflows to further modules is
+future work, not yet scheduled — see section 5e.
+
+Only the "Later" items after section 5e remain out of scope, and only if the business's shape
 changes.
 
 ## 1. Tech Stack (all free-tier)
@@ -991,6 +998,350 @@ re-litigated per phase below:
 
 This completes the `UPDATE.md` architecture-review mapping (Phases 26–37). Only the items below
 remain, and only if the business's shape changes.
+
+## 5e. Enterprise Role-Based Access Control (RBAC) — Phases 38+
+
+**Context**: the user supplied a detailed 19-section RBAC design (13 named roles — CEO, CFO, COO,
+CMO, CTO, Accountant, CA/Auditor, HR/Payroll, Kitchen Manager, Inventory Manager, Project Manager,
+Employee, Viewer — each with actions, module scope, data scope, and a module-specific approval
+hierarchy). Confirmed with the user: these are real people needed now (not aspirational), one
+person can hold multiple roles at once, and all three pieces below are wanted. Given the size —
+this is a bigger undertaking than the entire `UPDATE.md` mapping above — it's being built as its
+own phased initiative rather than one change, exactly like that mapping was.
+
+- **Phase 38 — Multi-Role Foundation & Permissions Matrix.** The data model + a management UI.
+  Deliberately additive: layered on top of the existing `users.role`/`can_manage_users` gate, not a
+  replacement — every existing RLS policy and posting function is completely unaffected.
+- **Phase 39 — Data Scope Hierarchy** (Branch/Department/Project/Own Records), real enforcement
+  beyond today's company-wide RLS. Likely splits further by module once underway.
+- **Phase 40 onward — Approval Workflows.** The largest piece: draft/submitted/approved/rejected
+  states and routing chains retrofitted into existing posting functions, one module at a time
+  (finance, operations, payroll, marketing, consulting) — each is realistically its own phase.
+
+### Phase 38 — Multi-Role Foundation & Permissions Matrix ✅
+- New `app_role_type` enum (the 13 named roles) and `user_app_roles` (many-to-many — one person,
+  multiple roles) — additive, `users.role`/`can_manage_users` untouched.
+- New `role_permissions` (`app_role`, `permission_key`) — global reference data (not company-scoped;
+  what a role *can* do is structural to the software, same reasoning as `tax_rates`/`tds_rates`).
+  `permission_key` is free text (`module.action`, e.g. `banking.edit`), not a check-constrained enum,
+  since this list will keep growing as more modules get wired in — same reasoning as
+  `journal_entries.reference_type`/`attachments.entity_type` having none.
+- Seeded a **starting** permission set per role (~65 rows total) based directly on the supplied
+  spec's own responsibility tables — explicitly not an exhaustive encoding of all 19 sections, meant
+  to be refined via the new UI as real usage clarifies exact rules. `viewer` intentionally starts
+  with zero grants ("whatever the CTO assigns," per its own definition).
+  `current_user_has_permission(p_permission_key)` is the check future phases will call as they
+  retrofit real enforcement — **nothing in the existing app consults it yet**, this phase is the
+  foundation only.
+  `current_user_can_manage_users()` — factored out of the repeated admin+`can_manage_users` check
+  (already used by `ManageUsers.jsx`) since Phase 38's new RLS policies needed it several times.
+  `assign_user_role()`/`revoke_user_role()` — SECURITY DEFINER, same gate, company-scoped, idempotent
+  on re-assign.
+- New "Roles & Permissions" admin page (`ManageUsers`-style gate: admin + `can_manage_users`, since a
+  real assigned CTO doesn't exist as a bootstrapping concept yet): a role-assignment grid (rows =
+  users, columns = the 13 roles, checkboxes) and a permission-matrix editor (pick a role, see/add/
+  remove its `permission_key` grants).
+- Tested live end-to-end with throwaway users: confirmed assigning two different roles to the same
+  person works (multi-role support); confirmed re-assigning an already-held role is a harmless no-op;
+  confirmed `current_user_has_permission()` correctly reflects a held role's grants and correctly
+  denies an ungranted one; confirmed a plain viewer is rejected from assigning roles to others and
+  from writing `role_permissions`, while still able to read it; confirmed a cross-company target is
+  rejected; confirmed revoke actually removes the role. Full cleanup afterward; the original 65-row
+  seed confirmed still intact; `trial_balance()` confirmed 0=0.
+
+### Phase 39 — Data Scope Hierarchy (Own Records & Assigned Projects) ✅
+- Scoped to what's real and testable today, narrower than the full Branch/Department/Project/Own
+  Records hierarchy in the original spec:
+  - **PROJECT** scope (Project Manager → "assigned projects"): buildable immediately —
+    `projects.project_manager_employee_id` already existed.
+  - **OWN_RECORDS** scope (Employee → "my attendance/leave/timesheet/payslip") needed a real missing
+    prerequisite first: nothing linked a login account (`users`) to an HR record (`employees`) at
+    all. Added `employees.user_id` (nullable both ways — not every employee has a login, not every
+    login is an employee) and `current_user_linked_employee_id()`.
+  - **BRANCH/WAREHOUSE** scope (Kitchen Manager, Inventory Manager) deliberately **not built** — only
+    one branch is in real use today (same reason Phase 20 already deferred the branch-switcher UI),
+    so there's no second value to meaningfully scope by yet. Revisit when a second branch actually
+    opens.
+  - **DEPARTMENT** scope dropped entirely — re-reading the spec, no role's concrete Data Scope box
+    actually uses it; it only appears in the abstract scope-hierarchy diagram. Building unused
+    plumbing for a dimension nothing needs would be pure speculation.
+- Real RLS narrowing (not just a permission check) on `employees`, `attendance`, `leave`,
+  `payroll_runs`, `projects`, `timesheets` — opt-in and additive: only narrows a caller whose
+  *existing* `users.role` is `'viewer'` (never admin/accountant, regardless of what app_roles they
+  also hold) AND who has been explicitly assigned the relevant new app_role. Since nobody held any
+  app_role before this phase, existing real accounts see exactly what they saw before — the
+  restriction only activates once an admin deliberately opts someone in via Roles & Permissions.
+- `employees` itself needed narrowing too, not just the transactional tables — it carries
+  `monthly_gross_salary`, arguably the single most sensitive field in the schema, so a scoped
+  Employee shouldn't see everyone else's row there any more than everyone else's payslip.
+- Narrowing `projects_select` for Project Manager automatically narrows `project_tasks_select` too
+  (it checks project visibility via a subquery against `projects`, itself subject to `projects`' own
+  RLS) — no separate change needed there. `timesheets_select` narrows two ways at once (own entries
+  for Employee, project-scoped entries for Project Manager) since someone could hold both roles.
+- New "Linked user account" field on `EmployeeMaster.jsx` to set `employees.user_id` — the only new
+  UI this phase needed. Everywhere else, scoping "just works" transparently on the *existing*
+  attendance/leave/projects/timesheets/payroll pages via RLS — no new self-service pages had to be
+  built, since none of those routes were ever admin-gated in the nav to begin with.
+- Tested live end-to-end with throwaway data: confirmed a viewer holding 'employee' sees only their
+  own `employees`/`attendance`/`leave`/`payroll_runs` rows, not another test employee's or any real
+  one; confirmed a plain viewer with **no** app_role assigned still sees everything company-wide,
+  proving zero regression for existing real accounts; confirmed admin sees everything unchanged;
+  confirmed a viewer holding 'project_manager' sees only their assigned project and only timesheets
+  on that project, not a colleague's project or timesheet entry. Full cleanup afterward;
+  `trial_balance()` confirmed 0=0.
+
+### Phase 40 — Approval Workflows (proof of concept: fixed asset capitalization) ✅
+- Generic, reusable mechanism, not a one-off: `approval_rules` (company-scoped, admin-editable
+  thresholds — `min_amount` tiers each resolving to an ordered `approval_chain` of app_roles, e.g.
+  `["coo","cfo"]` — never hardcoded, same discipline CLAUDE.md already requires for tax rates) and
+  `approval_requests` (the actual pending/approved/rejected record, one row per submission whether
+  or not it actually needed approval, so every capitalization has one consistent audit trail
+  regardless of amount).
+- Below the lowest configured tier, nothing changes from today's behavior: `submit_fixed_asset_
+  capitalization()` creates the request AND immediately resolves it in the same call.
+  `capitalize_fixed_asset()` itself is untouched either way — it's still the function a direct
+  admin/accountant call reaches.
+  `approve_request()`/`reject_request()` walk the chain one step at a time, checking the caller
+  holds the required app_role for the *current* step via `user_app_roles`; final approval actually
+  posts.
+- Seeded two starting tiers (₹0 → no approval, ₹50,000 → COO then CFO) as placeholder numbers,
+  explicitly meant to be edited immediately via the new UI — the real thresholds are a business
+  decision for the user to set, not one for this codebase to invent. New "Approval Rules" editor
+  added to the Roles & Permissions page (add/remove tiers, pick the ordered role chain via
+  checkboxes) — and a new "Approvals" page (list pending/resolved requests, Approve/Reject only
+  enabled for a step the signed-in user actually holds the role for).
+- **Real bug caught by testing, not by inspection**: `approve_request()`'s final-approval branch
+  originally called the public `capitalize_fixed_asset()` directly — but that function independently
+  re-checks `current_user_role() in ('admin','accountant')` against **whoever is calling it**, which
+  at that point is the *final approver* (e.g. a CFO), not the original requester. A CFO whose old
+  `users.role` is just `'viewer'` (real and expected — CFO is a *new* app_role, layered on top of the
+  old role system, not a replacement for it) got wrongly rejected with "Not authorized to capitalize
+  fixed assets" one step before actually posting. Fixed by extracting the real posting logic into a
+  new internal `_capitalize_fixed_asset_core()` with no role check at all — `capitalize_fixed_asset()`
+  keeps its own check and calls the core for a direct call; `submit_...()` and `approve_request()`
+  call the core directly, since each has already independently verified authority (admin/accountant
+  for a direct submission below threshold, the approval chain itself for a final approval) before
+  ever reaching it. Worth remembering for any future approval-gated module: the function that
+  actually posts must not re-derive authorization from the *caller's* role once an approval chain is
+  what actually granted it.
+- Tested live end-to-end: confirmed a below-threshold submission posts immediately, an
+  above-threshold one creates a pending request with no asset yet; confirmed a wrong-role user
+  (holding `cmo`) is rejected from approving a `coo`-required step; confirmed the `coo` approves step
+  1 and cannot also approve step 2 (now requires `cfo`); confirmed the `cfo`'s final approval — after
+  the bug above was fixed — actually creates the `fixed_assets` row with correctly balanced journal
+  entries, and that the same request can't be approved twice; confirmed a rejection leaves no asset
+  created; confirmed an admin can add/remove `approval_rules` tiers directly while a non-manager is
+  rejected from writing them (and can still read them). Full cleanup afterward; the original 2-tier
+  seed confirmed still intact; `trial_balance()` confirmed 0=0.
+
+### Phase 41 — Approval Workflows, second module: Payroll Runs ✅
+- Same generic `approval_rules`/`approval_requests` mechanism from Phase 40, extended to a second
+  module (`entity_type='payroll_run'`) rather than building a parallel system — matches the spec's
+  own HR/Payroll → CFO chain. `post_payroll_run()` itself is untouched for a direct call, exactly the
+  same split as `capitalize_fixed_asset()`: real posting logic extracted into a new
+  `_post_payroll_run_core()` with no role check, `post_payroll_run()` keeps its own admin/accountant
+  check and calls the core; `submit_payroll_run()` (the new entry point `RunPayroll.jsx` now calls)
+  and `approve_request()`'s new `payroll_run` branch call the core directly, since each already
+  independently verified authority before reaching it — applying the Phase 40 bug-fix pattern
+  *before* writing the code this time, not after. Seeded two placeholder tiers (₹0 → no approval,
+  ₹100,000 → CFO), same "edit immediately via the UI" framing as Phase 40's seed.
+  `RolesPermissions.jsx`'s Approval Rules editor and `Approvals.jsx`'s entity labels were generalized
+  from a single hardcoded module to a small module list, ready for a third.
+- Tested live end-to-end, explicitly re-running the exact bug scenario Phase 40 caught: confirmed a
+  below-threshold (₹30,000) run posts immediately; confirmed an above-threshold (₹150,000) run
+  creates a pending request with no `payroll_runs` row yet; confirmed a wrong-role holder (`coo`) is
+  rejected from a `cfo`-required step; confirmed the CFO test user — deliberately given old
+  `users.role='viewer'`, mirroring a real CFO who isn't also an "admin"/"accountant" in the old
+  system — approves the final step successfully this time, with the resulting `payroll_runs` row and
+  its journal entries balancing exactly (₹150,000 = ₹150,000); confirmed a rejected request leaves no
+  `payroll_runs` row. Full cleanup afterward; both modules' seed rows confirmed still intact;
+  `trial_balance()` confirmed 0=0.
+
+### Phase 42 — Approval Workflows, fourth module: Purchase Invoices ✅
+- Same generic mechanism, extended to `post_invoice()` — by far the largest, most complex function
+  gated so far (GST splitting, weighted-average raw-material costing, batch creation, atomic
+  invoice-number sequencing). **Deliberately purchase-only, never sales**, both to match the spec's
+  own worked example (a major purchase) and to keep the blast radius contained: `post_invoice()` has
+  three internal callers (`finalize_subscription_cycle()`, `convert_quote_to_invoice()`,
+  `post_project_invoice()`) — confirmed by reading each one that all three always pass
+  `p_type='sales'`, never `'purchase'`, so none of them are touched by this at all. Sales invoicing
+  (via `InvoiceForm.jsx` with `type="sales"`) keeps calling `post_invoice()` directly, unchanged.
+- Same split as Phases 40-41: real posting logic extracted into `_post_invoice_core()` (no role
+  check), `post_invoice()` keeps its own admin/accountant check and calls the core — unchanged for
+  every existing caller either way. `submit_purchase_invoice()` (the new entry point
+  `InvoiceForm.jsx` calls when `type="purchase"`) and `approve_request()`'s new `purchase_invoice`
+  branch call the core directly.
+- One real design decision worth recording: `approval_rules.min_amount` for `purchase_invoice` is
+  checked against the **pre-tax subtotal** (sum of quantity×rate across lines), not the GST-inclusive
+  grand total — the same figure `post_invoice()` itself computes before applying GST, cheaply
+  recomputed in `submit_purchase_invoice()` just to resolve the applicable tier. Flagged explicitly
+  in the code as a deliberate choice, not an oversight.
+  `InvoiceForm.jsx` (shared between Sales and Purchase invoices via a `type` prop) branches only for
+  `type === 'purchase'`; a pending result shows the same inline "submitted for approval" message
+  pattern as Phases 40-41 rather than navigating to a non-existent invoice detail page.
+  Seeded three tiers this time (₹0 → none, ₹50,000 → COO+CFO, ₹500,000 → COO+CFO+CEO), matching the
+  spec's own worked example more closely than the two-tier seeds in Phases 40-41.
+- Tested live end-to-end, including a full regression check on the untouched sales path: confirmed a
+  sales invoice posted directly via `post_invoice()` still computes GST correctly (₹1,000 line →
+  ₹1,180 with 9%+9% CGST/SGST) — proving the core-extraction refactor changed nothing for existing
+  callers; confirmed a below-threshold purchase (₹200) posts immediately with correct GST split,
+  weighted-average cost update, and a new `item_batches` row; confirmed an above-threshold purchase
+  (₹100,000) creates a pending request with **no** invoice, stock, or average-cost effect yet;
+  confirmed a wrong-role holder is rejected; confirmed the CFO test user — again deliberately given
+  old `users.role='viewer'`, the same scenario Phase 40 first caught as a bug — approves the final
+  step successfully, with the resulting invoice's GST split, weighted-average cost recalculation
+  (hand-verified: (10×20 + 1000×100) / 1010 = ₹99.21), and journal balance (₹105,000 = ₹105,000) all
+  exactly correct; confirmed a genuinely major purchase (₹600,000) resolves the 3-tier
+  COO→CFO→CEO chain, and that a rejection after partial approval leaves no invoice created. Full
+  cleanup afterward; all 7 approval_rules seed rows (across all three gated modules) confirmed
+  intact; `trial_balance()` confirmed 0=0.
+
+### Phase 43 — Approval Workflows, fourth module: Wastage ✅
+- Matches the spec's own Kitchen Manager worked example directly ("Wastage — Staff → record, Kitchen
+  Manager → approve, COO → approve if above threshold"). Same split as Phases 40-42:
+  `_post_wastage_core()` (no role check) extracted from `post_wastage()`, which keeps its own
+  admin/accountant check and calls the core — unchanged for its existing direct caller either way.
+  `submit_wastage()` (the new entry point `Wastage.jsx` now calls) and `approve_request()`'s new
+  `wastage` branch call the core directly.
+- **Real, deliberate deviation from the first three modules' threshold basis**: `approval_rules.
+  min_amount` here is checked against **quantity**, not cost. Wastage's cost is computed by
+  `consume_item_fefo()` *during* posting — it depends on which specific batches actually get
+  consumed — so unlike fixed-asset cost/payroll gross salary/purchase subtotal (all known inputs
+  before posting), there's no cheap way to preview wastage's cost before deciding whether a
+  submission needs approval at all. Quantity is the one figure knowable upfront. Flagged explicitly
+  in code comments and here, not a silent inconsistency — the Roles & Permissions UI's module
+  dropdown label says so too ("threshold is quantity, not cost").
+  Seeded two tiers: quantity 0 → no approval (matches today's behavior exactly), quantity ≥ 50 →
+  Kitchen Manager then COO.
+- Tested live end-to-end: confirmed a direct `post_wastage()` call (the pre-existing entry point)
+  still works unchanged; confirmed a below-threshold (5kg) submission posts immediately with the
+  correct FEFO-computed cost (₹50 at ₹10/kg); confirmed an above-threshold (60kg) submission creates
+  a pending request with no `wastage` row yet; confirmed a wrong-role holder is rejected; confirmed
+  Kitchen Manager approves step 1; confirmed the COO test user — again deliberately given old
+  `users.role='viewer'`, the same scenario Phase 40 first caught — approves the final step
+  successfully, with the resulting wastage cost (₹600 at ₹10/kg × 60kg) and journal balance
+  (₹600 = ₹600) both exactly correct; confirmed a rejected request leaves no wastage row created.
+  Full cleanup afterward; all 9 approval_rules seed rows (across all four gated modules) confirmed
+  intact; `trial_balance()` confirmed 0=0.
+
+### Phase 44 — Approval Workflows, fifth module: Project Invoicing ✅
+- Matches the spec's Consulting chain (Employee → Project Manager → COO → CFO/Accountant → Invoice).
+  The first two steps — logging a timesheet and a Project Manager approving it — already existed as
+  a separate, pre-existing feature (`timesheets.approval_status`); `post_project_invoice()` already
+  refused to invoice an unapproved timesheet before this phase. This phase gates the one remaining
+  step: the actual invoicing action itself, above a configurable amount. Same split as Phases 40-43:
+  `_post_project_invoice_core()` (no role check) extracted from `post_project_invoice()`, which keeps
+  its own admin/accountant check and calls the core — unchanged for its existing direct caller either
+  way. `submit_project_invoice()` (the new entry point `ProjectDetail.jsx` now calls) and
+  `approve_request()`'s new `project_invoice` branch call the core directly.
+- **A nested variant of the Phase 40 bug class, caught by reading the code before writing any test**:
+  `post_project_invoice()` internally invokes `post_invoice()` to actually post the sales invoice, not
+  just a database write of its own. Had `_post_project_invoice_core()` called the public
+  `post_invoice()`, the same final-approver-role bug from Phase 40 would have resurfaced one level
+  deeper. Fixed by calling `_post_invoice_core()` (Phase 42's core) directly instead.
+- Threshold basis: the pre-tax subtotal of the selected timesheets (sum of hours × billing_rate) — a
+  known input before posting, same reasoning as Phase 42's purchase-invoice subtotal. Seeded two
+  tiers: subtotal ₹0 → no approval (matches today's behavior exactly), subtotal ≥ ₹50,000 → COO then
+  CFO.
+- Tested live end-to-end: confirmed a direct `post_project_invoice()` call (the pre-existing entry
+  point) still works unchanged (₹2,500 subtotal posted immediately); confirmed a below-threshold
+  (₹10,000) submission posts immediately via `submit_project_invoice()` and links the timesheet's
+  `invoice_id`; confirmed an above-threshold (₹60,000) submission creates a pending request with the
+  timesheet left un-invoiced; confirmed a wrong-role holder (an `employee` app-role, not `coo`) is
+  rejected with no change to the request; confirmed COO approves step 1; confirmed the CFO test user —
+  again deliberately given old `users.role='viewer'`, the same scenario Phase 40 first caught —
+  approves the final step successfully, with the resulting invoice's GST split (same-state, 18% →
+  ₹5,400 CGST + ₹5,400 SGST, grand total ₹70,800) and journal balance (₹70,800 = ₹70,800) both exactly
+  correct, and the timesheet's `invoice_id` correctly linked; confirmed a rejected request (₹55,000)
+  leaves its timesheet un-invoiced. Full cleanup afterward; all 11 approval_rules seed rows per
+  company (across all five gated modules) confirmed intact for both companies; `trial_balance()`
+  confirmed 0=0.
+
+### Phase 45 — Approval Workflows, sixth module: Expense Claims ✅
+- Unlike Phases 40-44, there was no pre-existing posting function to gate — employee expense
+  reimbursement had never been a ledger-posted transaction in this app. Built a brand-new
+  `expense_claims` table + `_post_expense_claim_core()`/`post_expense_claim()` in the same
+  core+wrapper shape as every other module (for consistency, and to give admin/accountant a
+  direct-post entry point without going through approval, same as every other gated module has).
+  `submit_expense_claim()` (the new entry point `ExpenseClaims.jsx` calls) and `approve_request()`'s
+  new `expense_claim` branch call the core directly.
+- **Deliberately kept separate from `project_expenses`** (Phase 31, the Consulting module), which
+  stays exactly as-is: a plain, unposted, project-scoped cost record used only for profitability
+  reporting. An employee's reimbursement isn't necessarily tied to any project, so conflating the two
+  would force picking a project for a claim that may not have one.
+- Posting model: pay immediately, same simplicity as `post_payroll_run()` — debit the chosen expense
+  account, credit the chosen bank/cash account, one `entry_group_id`. No new "payable" system account
+  — `accounts_payable` already means vendor payables tied to a `party`, and an employee isn't a party
+  in this schema, so reusing it would have been a hack; a genuine pay-later flow is a real schema
+  change to propose if it's ever actually needed, not something to force in now.
+- Threshold basis: the claim amount itself — a known input before posting, same reasoning as
+  fixed-asset cost/payroll gross salary. Seeded two tiers: ₹0 → no approval, ₹5,000 → single-step CFO
+  approval — a reasonable starting default, not a compliance-blessed number, editable via the Roles &
+  Permissions UI immediately.
+- **Flagged, not decided (CLAUDE.md §8)**: whether an employee expense claim carries any GST
+  input-credit treatment is a real compliance question this module doesn't address — it's built as a
+  plain reimbursement expense with no tax split at all. A CA should confirm whether that's correct
+  before this is used for real claims that might carry GST.
+- Tested live end-to-end: confirmed a direct `post_expense_claim()` call posts correctly (₹800);
+  confirmed a below-threshold (₹2,000) submission posts immediately via `submit_expense_claim()` with
+  a balanced journal entry; confirmed an above-threshold (₹7,500) submission creates a pending request
+  with **no** `expense_claims` row yet; confirmed a wrong-role holder (an `employee` app-role, not
+  `cfo`) is rejected with no change to the request; confirmed the CFO test user — again deliberately
+  given old `users.role='viewer'`, the same scenario Phase 40 first caught — approves successfully,
+  with the resulting claim's journal entry hand-verified (expense account debited ₹7,500, bank account
+  credited ₹7,500, balanced); confirmed a rejected request (₹6,000) leaves no `expense_claims` row at
+  all; confirmed passing an asset account as the expense account is rejected by the core's own
+  account-type validation. Full cleanup afterward; all 13 approval_rules seed rows per company (across
+  all six gated modules) confirmed intact for both companies; `trial_balance()` confirmed 0=0.
+
+### Phase 46 — Approval Workflows, seventh module: Technology Access Requests ✅
+- Matches the spec's Technology/CTO chain, but is genuinely unlike every module in Phases 40-45 in two
+  ways. First, **no financial posting at all** — the first module in this whole initiative with no
+  journal entry. "Approval" here means recording that access was granted, not posting to the ledger;
+  the result table (`access_grants`) has no `entry_group_id`. This app has no ability to actually
+  provision access on a real external system (AWS, a vendor portal, a production database) — granting
+  here is a tracked, approved record of a decision a human still has to go act on outside this app. It's
+  a request/approval/audit trail, not a technical provisioning system.
+- Second, **only one `approval_rules` tier is seeded** (`min_amount=0` → `["cto"]`), not several — every
+  other module gates on a real, varying amount; an access request has no such number. `amount` is stored
+  as 0 purely because `approval_requests.amount` is a required column, semantically unused here. The
+  reused amount/tier mechanism still works exactly as designed, it just never needs a second tier.
+- Same core+wrapper split as every prior module: `_grant_access_core()` (no auth check) extracted from
+  `grant_access()` (checks admin/accountant, the direct-call entry point). `submit_access_request()` (the
+  new entry point `AccessRequests.jsx` calls) and `approve_request()`'s new `access_request` branch call
+  the core directly.
+- **Deliberately NOT self-service**, even though an employee requesting their own access is the more
+  natural shape for this feature — submission stays admin/accountant-only, same convention as every
+  other module. Reason: `approval_requests_select` is company-wide today, not narrowed to the requester
+  (harmless so far, since only admin/accountant could ever create a row). Opening self-service to any
+  `viewer`+`employee`-app-role user would let them see every OTHER pending approval request in the
+  company too (fixed asset capitalizations, payroll runs, purchase invoices, etc.) — a real RLS gap, not
+  a hypothetical one. Narrowing `approval_requests_select` to fix that is a bigger, separate change than
+  this phase's scope — flagged as future work if self-service ever becomes a real requirement.
+- `revoke_access()` is a separate, immediate action, not gated through the approval mechanism —
+  revoking access tightens security rather than loosening it, so it doesn't need the same multi-step
+  sign-off granting does. Gated to admin/accountant or a `cto` app-role holder.
+- Tested live end-to-end: confirmed a direct `grant_access()` call creates an active grant; confirmed
+  `submit_access_request()` creates a pending request (the single seeded tier always resolves to
+  `["cto"]`, so nothing auto-grants) with **no** `access_grants` row yet; confirmed a wrong-role holder
+  (an `employee` app-role, not `cto`) is rejected with no change to the request; confirmed the CTO test
+  user — again deliberately given old `users.role='viewer'`, the same scenario Phase 40 first caught —
+  approves successfully and the resulting grant's `system_name`/`access_level` match the original
+  submission exactly; confirmed the CTO can revoke that grant (`revoked_at`/`revoked_by` set correctly);
+  confirmed revoking an already-revoked grant is rejected (`This access grant is already revoked.`) —
+  caught and fixed a mistake in my own first test run here, where a wrong RPC parameter name
+  (`p_comment` instead of `p_reason`) caused PostgREST to report "function not found" rather than
+  actually exercising the check, so re-ran it correctly before trusting the result; confirmed a
+  wrong-role holder cannot revoke a still-active grant, and that the grant is left unaffected. Full
+  cleanup afterward; all 14 approval_rules seed rows per company (across all seven gated modules)
+  confirmed intact for both companies; `trial_balance()` confirmed 0=0; `access_grants` confirmed empty.
+
+Seven modules now have real, working approval workflows (fixed asset capitalization, payroll runs,
+purchase invoices, wastage, project/consulting invoicing, expense claims, technology access requests).
+What remains from the original spec — marketing spend (no campaigns module exists in this app at all)
+and the CA/Audit review loop (a genuinely new review/findings feature, not a gate on an existing
+function) — still posts immediately or has no workflow at all; extending further is future work, not
+yet scheduled.
 
 ### Later (not in current scope)
 - Multi-branch UI: branch switcher and consolidated multi-branch reports. Phase 20 makes the

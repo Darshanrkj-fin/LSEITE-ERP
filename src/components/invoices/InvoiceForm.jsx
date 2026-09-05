@@ -31,6 +31,7 @@ export function InvoiceForm({ type, basePath }) {
   const [previews, setPreviews] = useState([])
 
   const [error, setError] = useState(null)
+  const [info, setInfo] = useState(null)
   const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
@@ -118,6 +119,7 @@ export function InvoiceForm({ type, basePath }) {
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError(null)
+    setInfo(null)
 
     const payloadLines = lines
       .filter((l) => l.item_id && parseFloat(l.quantity) > 0 && parseFloat(l.rate) >= 0)
@@ -138,21 +140,39 @@ export function InvoiceForm({ type, basePath }) {
     }
 
     setSubmitting(true)
-    const { data, error: postError } = await supabase.rpc('post_invoice', {
-      p_type: type,
-      p_party_id: partyId,
-      p_invoice_date: invoiceDate,
-      p_revenue_expense_account_id: accountId,
-      p_line_items: payloadLines,
-      p_custom_order_id: customOrderId || null,
-    })
+    // Purchases go through the approval-aware entry point (may need
+    // sign-off above a configured amount — see Roles & Permissions);
+    // sales invoicing has no approval gate and keeps calling post_invoice
+    // directly, unchanged.
+    const { data, error: postError } =
+      type === 'purchase'
+        ? await supabase.rpc('submit_purchase_invoice', {
+            p_party_id: partyId,
+            p_invoice_date: invoiceDate,
+            p_revenue_expense_account_id: accountId,
+            p_line_items: payloadLines,
+            p_custom_order_id: customOrderId || null,
+          })
+        : await supabase.rpc('post_invoice', {
+            p_type: type,
+            p_party_id: partyId,
+            p_invoice_date: invoiceDate,
+            p_revenue_expense_account_id: accountId,
+            p_line_items: payloadLines,
+            p_custom_order_id: customOrderId || null,
+          })
     setSubmitting(false)
 
     if (postError) {
       setError(postError.message)
       return
     }
-    navigate(`${basePath}/${data.id}`)
+
+    if (type === 'purchase' && data.status === 'pending') {
+      setInfo(`Submitted for approval (needs: ${data.approval_chain.join(', ')}). See Approvals.`)
+      return
+    }
+    navigate(`${basePath}/${type === 'purchase' ? data.result_entity_id : data.id}`)
   }
 
   return (
@@ -341,6 +361,7 @@ export function InvoiceForm({ type, basePath }) {
         </div>
 
         {error && <p className="text-sm text-clay">{error}</p>}
+        {info && <p className="text-sm text-green-600">{info}</p>}
 
         <button
           type="submit"

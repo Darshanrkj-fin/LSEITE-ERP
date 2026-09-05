@@ -793,7 +793,17 @@ $$;
 -- type='good' items, and posts the matching journal_entries legs (which
 -- the existing balance trigger validates automatically).
 -- p_line_items shape: [{"item_id": "...", "quantity": 1, "rate": 100}, ...]
-create or replace function public.post_invoice(
+-- No authorization check here — trusted internal helper, same reasoning
+-- as _capitalize_fixed_asset_core()/_post_payroll_run_core() (Phases
+-- 40-41). post_invoice() below is the direct-call entry point (used by
+-- sales invoices via InvoiceForm.jsx, and internally by
+-- finalize_subscription_cycle()/convert_quote_to_invoice()/
+-- post_project_invoice() — all three always pass p_type='sales', never
+-- 'purchase') and checks admin/accountant itself; submit_purchase_invoice()/
+-- approve_request() (Phase 42) call this directly instead, since
+-- authority was already verified before reaching it either way.
+create function public._post_invoice_core(
+  p_company_id uuid,
   p_type text,
   p_party_id uuid,
   p_invoice_date date,
@@ -807,7 +817,7 @@ security definer
 set search_path = public
 as $$
 declare
-  v_company_id uuid;
+  v_company_id uuid := p_company_id;
   v_seller_state_code text;
   v_buyer_state_code text;
   v_expected_party_type text;
@@ -853,12 +863,6 @@ begin
     raise exception 'Invalid invoice type: %', p_type;
   end if;
 
-  -- security definer bypasses RLS, so re-check everything RLS would have
-  -- checked — same discipline bootstrap_company() already follows.
-  v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
-    raise exception 'Not authorized to post invoices.';
-  end if;
   perform public.reject_if_period_closed(v_company_id, p_invoice_date);
 
   select state_code into v_seller_state_code from public.companies where id = v_company_id;
@@ -1072,6 +1076,34 @@ begin
   end if;
 
   return v_invoice;
+end;
+$$;
+
+create or replace function public.post_invoice(
+  p_type text,
+  p_party_id uuid,
+  p_invoice_date date,
+  p_revenue_expense_account_id uuid,
+  p_line_items jsonb,
+  p_custom_order_id uuid default null
+)
+returns public.invoices
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+begin
+  -- security definer bypasses RLS, so re-check everything RLS would have
+  -- checked — same discipline bootstrap_company() already follows.
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to post invoices.';
+  end if;
+  return public._post_invoice_core(
+    v_company_id, p_type, p_party_id, p_invoice_date, p_revenue_expense_account_id, p_line_items, p_custom_order_id
+  );
 end;
 $$;
 
@@ -2089,13 +2121,22 @@ create table public.employees (
   join_date date not null,
   monthly_gross_salary numeric(14, 2) not null check (monthly_gross_salary >= 0),
   status text not null default 'active' check (status in ('active', 'inactive')),
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  -- Links a login account to its HR record — needed so RLS can resolve
+  -- "this logged-in person IS employee X" for own-records scoping
+  -- (Phase 39). Nullable both ways: not every employee has a login, and
+  -- not every login is an employee.
+  user_id uuid references public.users (id),
+  constraint employees_user_id_unique unique (user_id)
 );
 
 alter table public.employees enable row level security;
 
 create policy employees_select on public.employees
   for select using (company_id = public.current_user_company_id());
+-- Narrowed further down in the file, Phase 39 section — needs
+-- user_app_roles (Phase 38) and current_user_linked_employee_id(),
+-- neither of which exist yet this early in a fresh top-to-bottom deploy.
 create policy employees_write on public.employees
   for insert with check (
     company_id = public.current_user_company_id()
@@ -2161,16 +2202,27 @@ create policy payroll_runs_select on public.payroll_runs
 -- run_month is normalized to the first of its month so a duplicate run
 -- for the same employee+month is caught by the unique constraint above
 -- regardless of what day of the month the caller passes in.
-create function public.post_payroll_run(
+-- No authorization check here — trusted internal helper, same reasoning
+-- as _capitalize_fixed_asset_core() (Phase 40). post_payroll_run() below
+-- is the direct-call entry point and checks admin/accountant itself;
+-- submit_payroll_run()/approve_request() (Phase 41) call this directly
+-- instead, since by the time either reaches it, authority was already
+-- verified (admin/accountant for a below-threshold submission, the
+-- approval chain itself for a final approval) — re-checking
+-- admin/accountant against the FINAL APPROVER's own role would wrongly
+-- reject a CFO whose old users.role is just 'viewer', exactly the bug
+-- Phase 40 hit and fixed for fixed asset capitalization.
+create function public._post_payroll_run_core(
+  p_company_id uuid,
   p_employee_id uuid,
   p_run_month date,
   p_gross_salary numeric,
-  p_pf_deduction numeric default 0,
-  p_esi_deduction numeric default 0,
-  p_professional_tax_deduction numeric default 0,
-  p_other_deductions numeric default 0,
-  p_salary_expense_account_id uuid default null,
-  p_bank_account_id uuid default null
+  p_pf_deduction numeric,
+  p_esi_deduction numeric,
+  p_professional_tax_deduction numeric,
+  p_other_deductions numeric,
+  p_salary_expense_account_id uuid,
+  p_bank_account_id uuid
 )
 returns public.payroll_runs
 language plpgsql
@@ -2178,7 +2230,7 @@ security definer
 set search_path = public
 as $$
 declare
-  v_company_id uuid;
+  v_company_id uuid := p_company_id;
   v_employee public.employees;
   v_deductions_payable_account_id uuid;
   v_total_deductions numeric(14, 2);
@@ -2187,11 +2239,6 @@ declare
   v_entry_group uuid := gen_random_uuid();
   v_run public.payroll_runs;
 begin
-  v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
-    raise exception 'Not authorized to run payroll.';
-  end if;
-
   select * into v_employee from public.employees where id = p_employee_id and company_id = v_company_id;
   if not found then
     raise exception 'Employee not found in your company.';
@@ -2257,6 +2304,36 @@ begin
   end if;
 
   return v_run;
+end;
+$$;
+
+create function public.post_payroll_run(
+  p_employee_id uuid,
+  p_run_month date,
+  p_gross_salary numeric,
+  p_pf_deduction numeric default 0,
+  p_esi_deduction numeric default 0,
+  p_professional_tax_deduction numeric default 0,
+  p_other_deductions numeric default 0,
+  p_salary_expense_account_id uuid default null,
+  p_bank_account_id uuid default null
+)
+returns public.payroll_runs
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to run payroll.';
+  end if;
+  return public._post_payroll_run_core(
+    v_company_id, p_employee_id, p_run_month, p_gross_salary, p_pf_deduction, p_esi_deduction,
+    p_professional_tax_deduction, p_other_deductions, p_salary_expense_account_id, p_bank_account_id
+  );
 end;
 $$;
 
@@ -4105,7 +4182,14 @@ create policy wastage_select on public.wastage
 -- a write-off skip the P&L would understate a real cost, which CLAUDE.md
 -- section 5's minimalism carve-outs explicitly except ("financial
 -- calculations... never cut corners").
-create or replace function public.post_wastage(
+-- No authorization check here — trusted internal helper, same reasoning
+-- as _capitalize_fixed_asset_core()/_post_payroll_run_core()/
+-- _post_invoice_core() (Phases 40-42). post_wastage() below is the
+-- direct-call entry point and checks admin/accountant itself;
+-- submit_wastage()/approve_request() (Phase 43) call this directly
+-- instead, since authority was already verified before reaching it.
+create function public._post_wastage_core(
+  p_company_id uuid,
   p_item_id uuid,
   p_quantity numeric,
   p_reason text,
@@ -4117,7 +4201,7 @@ security definer
 set search_path = public
 as $$
 declare
-  v_company_id uuid;
+  v_company_id uuid := p_company_id;
   v_item record;
   v_cost numeric(14, 2);
   v_wastage_expense_account_id uuid;
@@ -4125,10 +4209,6 @@ declare
   v_entry_group uuid := gen_random_uuid();
   v_wastage public.wastage;
 begin
-  v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
-    raise exception 'Not authorized to record wastage.';
-  end if;
   perform public.reject_if_period_closed(v_company_id, p_wastage_date);
 
   if p_reason not in ('spoilage', 'expired', 'damaged', 'production_loss', 'preparation_loss', 'quality_rejection', 'other') then
@@ -4165,6 +4245,28 @@ begin
   end if;
 
   return v_wastage;
+end;
+$$;
+
+create function public.post_wastage(
+  p_item_id uuid,
+  p_quantity numeric,
+  p_reason text,
+  p_wastage_date date
+)
+returns public.wastage
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to record wastage.';
+  end if;
+  return public._post_wastage_core(v_company_id, p_item_id, p_quantity, p_reason, p_wastage_date);
 end;
 $$;
 
@@ -4551,7 +4653,17 @@ create policy project_expenses_delete on public.project_expenses
 -- drives the tax lookup inside post_invoice(), same as every other sale;
 -- never a parallel billing/tax path). Marks the timesheets invoiced in
 -- the same transaction as posting, so a failure rolls back both together.
-create or replace function public.post_project_invoice(
+-- No authorization check here — trusted internal helper, same reasoning
+-- as _capitalize_fixed_asset_core()/_post_payroll_run_core()/
+-- _post_invoice_core()/_post_wastage_core() (Phases 40-43).
+-- post_project_invoice() below is the direct-call entry point and checks
+-- admin/accountant itself; submit_project_invoice()/approve_request()
+-- (Phase 44) call this directly instead. Calls _post_invoice_core()
+-- (not post_invoice() itself) for the same reason one level down — that
+-- public wrapper has its own admin/accountant check, which would wrongly
+-- re-run against the final approver's own role too.
+create function public._post_project_invoice_core(
+  p_company_id uuid,
   p_project_id uuid,
   p_invoice_date date,
   p_item_id uuid,
@@ -4564,18 +4676,13 @@ security definer
 set search_path = public
 as $$
 declare
-  v_company_id uuid;
+  v_company_id uuid := p_company_id;
   v_project public.projects;
   v_line_items jsonb;
   v_invoice public.invoices;
   v_timesheet_id uuid;
   v_ts public.timesheets;
 begin
-  v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
-    raise exception 'Not authorized to invoice projects.';
-  end if;
-
   select * into v_project from public.projects where id = p_project_id and company_id = v_company_id;
   if not found then
     raise exception 'Project not found in your company.';
@@ -4615,11 +4722,38 @@ begin
       group by billing_rate
     ) grouped;
 
-  v_invoice := public.post_invoice('sales', v_project.client_party_id, p_invoice_date, p_revenue_expense_account_id, v_line_items);
+  v_invoice := public._post_invoice_core(
+    v_company_id, 'sales', v_project.client_party_id, p_invoice_date, p_revenue_expense_account_id, v_line_items, null
+  );
 
   update public.timesheets set invoice_id = v_invoice.id where id = any(p_timesheet_ids);
 
   return v_invoice;
+end;
+$$;
+
+create function public.post_project_invoice(
+  p_project_id uuid,
+  p_invoice_date date,
+  p_item_id uuid,
+  p_revenue_expense_account_id uuid,
+  p_timesheet_ids uuid[]
+)
+returns public.invoices
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to invoice projects.';
+  end if;
+  return public._post_project_invoice_core(
+    v_company_id, p_project_id, p_invoice_date, p_item_id, p_revenue_expense_account_id, p_timesheet_ids
+  );
 end;
 $$;
 
@@ -4964,6 +5098,73 @@ create policy depreciation_runs_select on public.depreciation_runs
 -- credit — either an asset or liability account is accepted, unlike most
 -- postings here which only accept one type, since a capital purchase is
 -- routinely made either way).
+-- No authorization check here — this is a trusted internal helper.
+-- capitalize_fixed_asset() (below) is the direct-call entry point and
+-- checks admin/accountant itself before calling this; approve_request()
+-- (Phase 40) calls this directly instead, since by the time a request
+-- reaches final approval, authority was already verified step-by-step
+-- against the approval chain — re-checking admin/accountant against the
+-- FINAL APPROVER's own role would wrongly reject a CFO/CEO whose old
+-- users.role is just 'viewer'.
+create function public._capitalize_fixed_asset_core(
+  p_company_id uuid,
+  p_category_id uuid,
+  p_name text,
+  p_asset_code text,
+  p_purchase_date date,
+  p_cost numeric,
+  p_salvage_value numeric,
+  p_funding_account_id uuid
+)
+returns public.fixed_assets
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_fixed_assets_account_id uuid;
+  v_entry_group uuid := gen_random_uuid();
+  v_asset public.fixed_assets;
+begin
+  perform public.reject_if_period_closed(p_company_id, p_purchase_date);
+
+  if not exists (select 1 from public.asset_categories where id = p_category_id and company_id = p_company_id) then
+    raise exception 'Asset category not found in your company.';
+  end if;
+  if p_salvage_value >= p_cost then
+    raise exception 'Salvage value must be less than cost.';
+  end if;
+  if not exists (
+    select 1 from public.chart_of_accounts
+    where id = p_funding_account_id and company_id = p_company_id and type in ('asset', 'liability')
+  ) then
+    raise exception 'Funding account not found in your company, or not an asset/liability account.';
+  end if;
+
+  select id into v_fixed_assets_account_id from public.chart_of_accounts
+    where company_id = p_company_id and system_role = 'fixed_assets_gross';
+  if v_fixed_assets_account_id is null then
+    raise exception 'Missing system ledger account(s) for this company.';
+  end if;
+
+  insert into public.fixed_assets (
+    company_id, category_id, name, asset_code, purchase_date, cost, salvage_value, entry_group_id
+  ) values (
+    p_company_id, p_category_id, p_name, p_asset_code, p_purchase_date, p_cost, p_salvage_value, v_entry_group
+  ) returning * into v_asset;
+
+  insert into public.asset_transactions (company_id, asset_id, transaction_type, transaction_date, amount, entry_group_id)
+    values (p_company_id, v_asset.id, 'capitalization', p_purchase_date, p_cost, v_entry_group);
+
+  insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+    values (p_company_id, v_entry_group, p_purchase_date, v_fixed_assets_account_id, p_cost, 0, 'fixed_asset', v_asset.id);
+  insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+    values (p_company_id, v_entry_group, p_purchase_date, p_funding_account_id, 0, p_cost, 'fixed_asset', v_asset.id);
+
+  return v_asset;
+end;
+$$;
+
 create or replace function public.capitalize_fixed_asset(
   p_category_id uuid,
   p_name text,
@@ -4980,50 +5181,14 @@ set search_path = public
 as $$
 declare
   v_company_id uuid;
-  v_fixed_assets_account_id uuid;
-  v_entry_group uuid := gen_random_uuid();
-  v_asset public.fixed_assets;
 begin
   v_company_id := public.current_user_company_id();
   if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
     raise exception 'Not authorized to capitalize fixed assets.';
   end if;
-  perform public.reject_if_period_closed(v_company_id, p_purchase_date);
-
-  if not exists (select 1 from public.asset_categories where id = p_category_id and company_id = v_company_id) then
-    raise exception 'Asset category not found in your company.';
-  end if;
-  if p_salvage_value >= p_cost then
-    raise exception 'Salvage value must be less than cost.';
-  end if;
-  if not exists (
-    select 1 from public.chart_of_accounts
-    where id = p_funding_account_id and company_id = v_company_id and type in ('asset', 'liability')
-  ) then
-    raise exception 'Funding account not found in your company, or not an asset/liability account.';
-  end if;
-
-  select id into v_fixed_assets_account_id from public.chart_of_accounts
-    where company_id = v_company_id and system_role = 'fixed_assets_gross';
-  if v_fixed_assets_account_id is null then
-    raise exception 'Missing system ledger account(s) for this company.';
-  end if;
-
-  insert into public.fixed_assets (
-    company_id, category_id, name, asset_code, purchase_date, cost, salvage_value, entry_group_id
-  ) values (
-    v_company_id, p_category_id, p_name, p_asset_code, p_purchase_date, p_cost, p_salvage_value, v_entry_group
-  ) returning * into v_asset;
-
-  insert into public.asset_transactions (company_id, asset_id, transaction_type, transaction_date, amount, entry_group_id)
-    values (v_company_id, v_asset.id, 'capitalization', p_purchase_date, p_cost, v_entry_group);
-
-  insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
-    values (v_company_id, v_entry_group, p_purchase_date, v_fixed_assets_account_id, p_cost, 0, 'fixed_asset', v_asset.id);
-  insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
-    values (v_company_id, v_entry_group, p_purchase_date, p_funding_account_id, 0, p_cost, 'fixed_asset', v_asset.id);
-
-  return v_asset;
+  return public._capitalize_fixed_asset_core(
+    v_company_id, p_category_id, p_name, p_asset_code, p_purchase_date, p_cost, p_salvage_value, p_funding_account_id
+  );
 end;
 $$;
 
@@ -5613,3 +5778,1510 @@ end;
 $$;
 
 grant execute on function public.update_user_role(uuid, text, boolean) to authenticated;
+
+-- ============================================================
+-- Phase 38 — Multi-Role Foundation & Permissions Matrix
+-- Additive, layered on top of the existing users.role/can_manage_users
+-- gate (completely unaffected) — a person can now ALSO hold any number
+-- of these named roles, each granting a set of permission_key grants
+-- looked up via current_user_has_permission(). Existing RLS/RPCs are NOT
+-- retrofitted to consult this yet (that's later phases, module by
+-- module) — this phase is the data model + management UI, with a
+-- starting permission-key seed meant to be refined via that UI, not a
+-- final encoding of every module's exact rules.
+-- ============================================================
+
+create type public.app_role_type as enum (
+  'ceo', 'cfo', 'coo', 'cmo', 'cto',
+  'accountant', 'ca_auditor', 'hr_payroll',
+  'kitchen_manager', 'inventory_manager', 'project_manager',
+  'employee', 'viewer'
+);
+
+-- Shared helper — same admin+can_manage_users check ManageUsers.jsx
+-- already gates on, factored out since Phase 38's new RLS policies need
+-- it repeatedly.
+create function public.current_user_can_manage_users()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select coalesce(
+    (select role = 'admin' and can_manage_users from public.users where id = auth.uid()),
+    false
+  );
+$$;
+
+-- Many-to-many: one person can hold multiple named roles (e.g. both cfo
+-- and coo) at once.
+create table public.user_app_roles (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  user_id uuid not null references public.users (id) on delete cascade,
+  app_role public.app_role_type not null,
+  assigned_by uuid references public.users (id),
+  created_at timestamptz not null default now(),
+  unique (user_id, app_role)
+);
+
+grant select, insert, update, delete on public.user_app_roles to authenticated;
+grant all on public.user_app_roles to service_role;
+
+alter table public.user_app_roles enable row level security;
+
+create policy user_app_roles_select on public.user_app_roles
+  for select using (
+    user_id = auth.uid()
+    or (company_id = public.current_user_company_id() and public.current_user_can_manage_users())
+  );
+-- No insert/update/delete policy — all writes go through
+-- assign_user_role()/revoke_user_role() below, same reasoning as invoices.
+
+-- What each named role grants — permission_key is free text ("module.
+-- action", e.g. "banking.edit"), not a check-constrained enum, since this
+-- list will keep growing as more modules get wired in. Global, not
+-- company-scoped: what a role CAN do is structural to the software, same
+-- reasoning as tax_rates/tds_rates.
+create table public.role_permissions (
+  id uuid primary key default gen_random_uuid(),
+  app_role public.app_role_type not null,
+  permission_key text not null,
+  created_at timestamptz not null default now(),
+  unique (app_role, permission_key)
+);
+
+grant select, insert, update, delete on public.role_permissions to authenticated;
+grant all on public.role_permissions to service_role;
+
+alter table public.role_permissions enable row level security;
+
+create policy role_permissions_select on public.role_permissions for select using (true);
+create policy role_permissions_write on public.role_permissions
+  for insert with check (public.current_user_can_manage_users());
+create policy role_permissions_delete on public.role_permissions
+  for delete using (public.current_user_can_manage_users());
+
+create function public.assign_user_role(p_user_id uuid, p_app_role text)
+returns public.user_app_roles
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_caller_company_id uuid;
+  v_row public.user_app_roles;
+begin
+  v_caller_company_id := public.current_user_company_id();
+  if v_caller_company_id is null or not public.current_user_can_manage_users() then
+    raise exception 'Not authorized to assign roles.';
+  end if;
+
+  if not exists (
+    select 1 from public.users where id = p_user_id and company_id = v_caller_company_id
+  ) then
+    raise exception 'User not found in your company.';
+  end if;
+
+  insert into public.user_app_roles (company_id, user_id, app_role, assigned_by)
+  values (v_caller_company_id, p_user_id, p_app_role::public.app_role_type, auth.uid())
+  on conflict (user_id, app_role) do nothing;
+
+  select * into v_row from public.user_app_roles
+    where user_id = p_user_id and app_role = p_app_role::public.app_role_type;
+  return v_row;
+end;
+$$;
+
+grant execute on function public.assign_user_role(uuid, text) to authenticated;
+
+create function public.revoke_user_role(p_user_id uuid, p_app_role text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_caller_company_id uuid;
+begin
+  v_caller_company_id := public.current_user_company_id();
+  if v_caller_company_id is null or not public.current_user_can_manage_users() then
+    raise exception 'Not authorized to revoke roles.';
+  end if;
+
+  delete from public.user_app_roles
+  where user_id = p_user_id and app_role = p_app_role::public.app_role_type
+    and company_id = v_caller_company_id;
+end;
+$$;
+
+grant execute on function public.revoke_user_role(uuid, text) to authenticated;
+
+-- Checked by future phases as they retrofit real enforcement into
+-- existing modules — a plain boolean so it's cheap to sprinkle into an
+-- RLS policy or an RPC's authorization check.
+create function public.current_user_has_permission(p_permission_key text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.user_app_roles uar
+    join public.role_permissions rp on rp.app_role = uar.app_role
+    where uar.user_id = auth.uid() and rp.permission_key = p_permission_key
+  );
+$$;
+
+grant execute on function public.current_user_has_permission(text) to authenticated;
+
+-- Starting permission-key seed, one illustrative pass per role based on
+-- the role's stated responsibilities — intentionally not exhaustive.
+-- Global (no company_id), so this seeds once, not per-company.
+insert into public.role_permissions (app_role, permission_key) values
+  ('ceo', 'financial_reports.view'), ('ceo', 'operations.view'), ('ceo', 'marketing.view'),
+  ('ceo', 'technology.view'), ('ceo', 'reports.export'), ('ceo', 'business.configure'),
+  ('cfo', 'accounting.view'), ('cfo', 'accounting.create'), ('cfo', 'accounting.edit'),
+  ('cfo', 'accounting.approve'), ('cfo', 'accounting.post'), ('cfo', 'accounting.reverse'),
+  ('cfo', 'banking.edit'), ('cfo', 'payroll.approve'), ('cfo', 'reports.export'),
+  ('coo', 'operations.view'), ('coo', 'operations.create'), ('coo', 'operations.edit'),
+  ('coo', 'operations.approve'), ('coo', 'inventory.view'), ('coo', 'production.view'),
+  ('coo', 'reports.export'),
+  ('cmo', 'marketing.view'), ('cmo', 'marketing.create'), ('cmo', 'marketing.edit'),
+  ('cmo', 'marketing.approve'), ('cmo', 'customers.view'), ('cmo', 'reports.export'),
+  ('cto', 'users.view'), ('cto', 'users.assign'), ('cto', 'users.configure'),
+  ('cto', 'security.configure'), ('cto', 'audit.view'),
+  ('accountant', 'accounting.view'), ('accountant', 'accounting.create'),
+  ('accountant', 'accounting.edit'), ('accountant', 'accounting.submit'),
+  ('accountant', 'reports.export'),
+  ('ca_auditor', 'accounting.view'), ('ca_auditor', 'accounting.review'),
+  ('ca_auditor', 'reports.export'), ('ca_auditor', 'reports.generate'),
+  ('hr_payroll', 'hr.view'), ('hr_payroll', 'hr.create'), ('hr_payroll', 'hr.edit'),
+  ('hr_payroll', 'payroll.prepare'), ('hr_payroll', 'reports.export'),
+  ('kitchen_manager', 'kitchen.view'), ('kitchen_manager', 'kitchen.create'),
+  ('kitchen_manager', 'kitchen.edit'), ('kitchen_manager', 'kitchen.approve'),
+  ('kitchen_manager', 'wastage.approve'),
+  ('inventory_manager', 'inventory.view'), ('inventory_manager', 'inventory.create'),
+  ('inventory_manager', 'inventory.edit'), ('inventory_manager', 'inventory.adjust'),
+  ('inventory_manager', 'inventory.transfer'), ('inventory_manager', 'inventory.count'),
+  ('project_manager', 'projects.view'), ('project_manager', 'projects.create'),
+  ('project_manager', 'projects.edit'), ('project_manager', 'timesheets.approve'),
+  ('employee', 'own_records.view'), ('employee', 'own_records.create'),
+  ('employee', 'own_records.submit')
+  -- 'viewer' intentionally starts with no grants — "whatever the CTO
+  -- assigns," per the role's own definition.
+on conflict (app_role, permission_key) do nothing;
+
+-- ============================================================
+-- Phase 39 — Data Scope Hierarchy (Own Records & Assigned Projects)
+-- Real RLS narrowing, opt-in and additive: every policy below only
+-- narrows visibility for a caller whose EXISTING users.role is 'viewer'
+-- (never for admin/accountant, regardless of what app_roles they also
+-- hold) AND who has been explicitly assigned the relevant new app_role.
+-- Nobody holds any app_role until an admin assigns one via Roles &
+-- Permissions (Phase 38), so this is a no-op for every real account
+-- until that happens deliberately — existing behavior for today's real
+-- users is completely unchanged.
+--
+-- BRANCH/WAREHOUSE scope (Kitchen Manager, Inventory Manager) is
+-- deliberately NOT built here — there's only one branch in real use
+-- today (see Phase 20's own deferral of the branch-switcher UI for the
+-- same reason), so there's no second value to meaningfully scope by yet.
+-- ============================================================
+
+create function public.current_user_linked_employee_id()
+returns uuid
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select id from public.employees where user_id = auth.uid();
+$$;
+
+-- employees carries monthly_gross_salary, arguably the single most
+-- sensitive field in the whole schema — a scoped Employee shouldn't see
+-- anyone else's row here any more than they should see anyone else's
+-- payslip.
+drop policy employees_select on public.employees;
+create policy employees_select on public.employees
+  for select using (
+    company_id = public.current_user_company_id()
+    and (
+      public.current_user_role() <> 'viewer'
+      or not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'employee')
+      or id = public.current_user_linked_employee_id()
+    )
+  );
+
+drop policy attendance_select on public.attendance;
+create policy attendance_select on public.attendance
+  for select using (
+    company_id = public.current_user_company_id()
+    and (
+      public.current_user_role() <> 'viewer'
+      or not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'employee')
+      or employee_id = public.current_user_linked_employee_id()
+    )
+  );
+
+drop policy leave_select on public.leave;
+create policy leave_select on public.leave
+  for select using (
+    company_id = public.current_user_company_id()
+    and (
+      public.current_user_role() <> 'viewer'
+      or not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'employee')
+      or employee_id = public.current_user_linked_employee_id()
+    )
+  );
+
+drop policy payroll_runs_select on public.payroll_runs;
+create policy payroll_runs_select on public.payroll_runs
+  for select using (
+    company_id = public.current_user_company_id()
+    and (
+      public.current_user_role() <> 'viewer'
+      or not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'employee')
+      or employee_id = public.current_user_linked_employee_id()
+    )
+  );
+
+-- Project Manager's "assigned projects" scope. Narrowing this
+-- automatically narrows project_tasks_select too (it checks project
+-- visibility via a subquery against projects, which is itself subject to
+-- projects' own RLS) — no separate change needed there.
+drop policy projects_select on public.projects;
+create policy projects_select on public.projects
+  for select using (
+    company_id = public.current_user_company_id()
+    and (
+      public.current_user_role() <> 'viewer'
+      or not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'project_manager')
+      or project_manager_employee_id = public.current_user_linked_employee_id()
+    )
+  );
+
+-- Timesheets narrow two ways at once: an Employee sees their own entries,
+-- a Project Manager sees entries on projects they manage. Someone holding
+-- both app_roles gets the union of both.
+drop policy timesheets_select on public.timesheets;
+create policy timesheets_select on public.timesheets
+  for select using (
+    company_id = public.current_user_company_id()
+    and (
+      public.current_user_role() <> 'viewer'
+      or not exists (
+        select 1 from public.user_app_roles
+        where user_id = auth.uid() and app_role in ('employee', 'project_manager')
+      )
+      or employee_id = public.current_user_linked_employee_id()
+      or project_id in (
+        select id from public.projects
+        where project_manager_employee_id = public.current_user_linked_employee_id()
+      )
+    )
+  );
+
+-- ============================================================
+-- Phase 40 — Approval Workflows (proof of concept: fixed asset
+-- capitalization only; UPDATE.md's other modules are separate later
+-- phases, not attempted here)
+-- Generic, reusable mechanism: approval_rules (admin-editable thresholds
+-- — never hardcoded, same discipline CLAUDE.md already requires for tax
+-- rates) resolves an ordered app_role chain for a given amount;
+-- approval_requests is the actual pending/approved/rejected record.
+-- Below the configured threshold, nothing changes from today's behavior
+-- — the request is created AND immediately resolved in the same call, so
+-- capitalize_fixed_asset() itself is completely untouched either way.
+-- ============================================================
+
+create table public.approval_rules (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  entity_type text not null,
+  min_amount numeric(14, 2) not null default 0 check (min_amount >= 0),
+  -- Ordered array of app_role_type values, e.g. '["coo","cfo"]' — an
+  -- empty array means "no approval needed at this amount," which is what
+  -- lets the min_amount=0 tier reproduce today's immediate-post behavior
+  -- exactly.
+  approval_chain jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now(),
+  unique (company_id, entity_type, min_amount)
+);
+
+grant select, insert, update, delete on public.approval_rules to authenticated;
+grant all on public.approval_rules to service_role;
+
+alter table public.approval_rules enable row level security;
+
+create policy approval_rules_select on public.approval_rules
+  for select using (company_id = public.current_user_company_id());
+create policy approval_rules_write on public.approval_rules
+  for insert with check (company_id = public.current_user_company_id() and public.current_user_can_manage_users());
+create policy approval_rules_update on public.approval_rules
+  for update using (company_id = public.current_user_company_id() and public.current_user_can_manage_users());
+create policy approval_rules_delete on public.approval_rules
+  for delete using (company_id = public.current_user_company_id() and public.current_user_can_manage_users());
+
+-- One row per submitted request, whether or not it actually needed
+-- approval — even an auto-approved (below-threshold) submission gets a
+-- row, so every capitalization has one consistent audit trail regardless
+-- of amount. payload carries the original call's arguments, replayed
+-- verbatim against capitalize_fixed_asset() at final approval.
+create table public.approval_requests (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  entity_type text not null,
+  requested_by uuid not null references public.users (id),
+  amount numeric(14, 2) not null,
+  payload jsonb not null,
+  approval_chain jsonb not null,
+  current_step int not null default 0,
+  status text not null default 'pending' check (status in ('pending', 'approved', 'rejected', 'cancelled')),
+  decisions jsonb not null default '[]'::jsonb,
+  result_entity_id uuid,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+grant select, insert, update, delete on public.approval_requests to authenticated;
+grant all on public.approval_requests to service_role;
+
+alter table public.approval_requests enable row level security;
+
+create policy approval_requests_select on public.approval_requests
+  for select using (company_id = public.current_user_company_id());
+-- No insert/update/delete policy — all writes go through
+-- submit_fixed_asset_capitalization()/approve_request()/reject_request().
+
+-- Seed a starting example so the mechanism is immediately visible/usable
+-- in the new Approval Rules UI — these are placeholder numbers, meant to
+-- be edited to the real thresholds right away, not a business decision
+-- made here. min_amount=0/chain=[] reproduces today's behavior exactly
+-- for routine capitalizations.
+insert into public.approval_rules (company_id, entity_type, min_amount, approval_chain)
+select id, 'fixed_asset_capitalization', 0, '[]'::jsonb from public.companies
+union all
+select id, 'fixed_asset_capitalization', 50000, '["coo", "cfo"]'::jsonb from public.companies
+on conflict (company_id, entity_type, min_amount) do nothing;
+
+create function public.submit_fixed_asset_capitalization(
+  p_category_id uuid,
+  p_name text,
+  p_asset_code text,
+  p_purchase_date date,
+  p_cost numeric,
+  p_salvage_value numeric,
+  p_funding_account_id uuid
+)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_chain jsonb;
+  v_request public.approval_requests;
+  v_asset public.fixed_assets;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to capitalize fixed assets.';
+  end if;
+
+  select approval_chain into v_chain
+    from public.approval_rules
+    where company_id = v_company_id and entity_type = 'fixed_asset_capitalization' and min_amount <= p_cost
+    order by min_amount desc
+    limit 1;
+  v_chain := coalesce(v_chain, '[]'::jsonb);
+
+  insert into public.approval_requests (
+    company_id, entity_type, requested_by, amount, payload, approval_chain, current_step, status
+  ) values (
+    v_company_id, 'fixed_asset_capitalization', auth.uid(), p_cost,
+    jsonb_build_object(
+      'p_category_id', p_category_id, 'p_name', p_name, 'p_asset_code', p_asset_code,
+      'p_purchase_date', p_purchase_date, 'p_cost', p_cost, 'p_salvage_value', p_salvage_value,
+      'p_funding_account_id', p_funding_account_id
+    ),
+    v_chain, 0,
+    case when jsonb_array_length(v_chain) = 0 then 'approved' else 'pending' end
+  ) returning * into v_request;
+
+  if jsonb_array_length(v_chain) = 0 then
+    -- Calls the internal helper directly, not capitalize_fixed_asset()
+    -- itself — the admin/accountant check just above already covers this
+    -- call's authority; re-checking it a second time inside the helper's
+    -- public wrapper would be redundant, and matters once approve_request()
+    -- (below) needs the same helper without that check applying at all.
+    v_asset := public._capitalize_fixed_asset_core(
+      v_company_id, p_category_id, p_name, p_asset_code, p_purchase_date, p_cost, p_salvage_value, p_funding_account_id
+    );
+    update public.approval_requests set result_entity_id = v_asset.id
+      where id = v_request.id
+      returning * into v_request;
+  end if;
+
+  return v_request;
+end;
+$$;
+
+grant execute on function public.submit_fixed_asset_capitalization(uuid, text, text, date, numeric, numeric, uuid) to authenticated;
+
+-- Only one entity_type exists yet (fixed_asset_capitalization) — the
+-- if/elsif on v_request.entity_type below is where a future phase adding
+-- a second approval-gated module adds its own branch.
+create or replace function public.approve_request(p_request_id uuid, p_comment text default null)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_request public.approval_requests;
+  v_required_role text;
+  v_asset public.fixed_assets;
+  v_payroll_run public.payroll_runs;
+  v_invoice public.invoices;
+  v_wastage public.wastage;
+  v_claim public.expense_claims;
+  v_grant public.access_grants;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null then
+    raise exception 'Not authenticated.';
+  end if;
+
+  select * into v_request from public.approval_requests
+    where id = p_request_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Approval request not found in your company.';
+  end if;
+  if v_request.status <> 'pending' then
+    raise exception 'This request is % and cannot be approved.', v_request.status;
+  end if;
+
+  v_required_role := v_request.approval_chain ->> v_request.current_step;
+  if not exists (
+    select 1 from public.user_app_roles
+    where user_id = auth.uid() and app_role = v_required_role::public.app_role_type
+  ) then
+    raise exception 'You do not hold the % role required for this approval step.', v_required_role;
+  end if;
+
+  update public.approval_requests
+    set decisions = decisions || jsonb_build_object(
+          'step', current_step, 'app_role', v_required_role, 'user_id', auth.uid(),
+          'decision', 'approved', 'comment', p_comment, 'decided_at', now()
+        ),
+        current_step = current_step + 1,
+        updated_at = now()
+    where id = p_request_id
+    returning * into v_request;
+
+  if v_request.current_step >= jsonb_array_length(v_request.approval_chain) then
+    if v_request.entity_type = 'fixed_asset_capitalization' then
+      -- The internal helper, not capitalize_fixed_asset() — the final
+      -- approver's own users.role may just be 'viewer' (e.g. a CFO who
+      -- isn't also an admin/accountant in the old role system), and
+      -- authority here was already verified step-by-step against the
+      -- approval chain above, not by that function's own admin/accountant
+      -- check.
+      v_asset := public._capitalize_fixed_asset_core(
+        v_company_id,
+        (v_request.payload ->> 'p_category_id')::uuid,
+        v_request.payload ->> 'p_name',
+        v_request.payload ->> 'p_asset_code',
+        (v_request.payload ->> 'p_purchase_date')::date,
+        (v_request.payload ->> 'p_cost')::numeric,
+        (v_request.payload ->> 'p_salvage_value')::numeric,
+        (v_request.payload ->> 'p_funding_account_id')::uuid
+      );
+      update public.approval_requests
+        set status = 'approved', result_entity_id = v_asset.id, updated_at = now()
+        where id = p_request_id
+        returning * into v_request;
+    elsif v_request.entity_type = 'payroll_run' then
+      -- Same reasoning as the fixed_asset_capitalization branch above —
+      -- the internal helper, not post_payroll_run(), since authority was
+      -- already verified against the approval chain, not the final
+      -- approver's own users.role.
+      v_payroll_run := public._post_payroll_run_core(
+        v_company_id,
+        (v_request.payload ->> 'p_employee_id')::uuid,
+        (v_request.payload ->> 'p_run_month')::date,
+        (v_request.payload ->> 'p_gross_salary')::numeric,
+        (v_request.payload ->> 'p_pf_deduction')::numeric,
+        (v_request.payload ->> 'p_esi_deduction')::numeric,
+        (v_request.payload ->> 'p_professional_tax_deduction')::numeric,
+        (v_request.payload ->> 'p_other_deductions')::numeric,
+        (v_request.payload ->> 'p_salary_expense_account_id')::uuid,
+        (v_request.payload ->> 'p_bank_account_id')::uuid
+      );
+      update public.approval_requests
+        set status = 'approved', result_entity_id = v_payroll_run.id, updated_at = now()
+        where id = p_request_id
+        returning * into v_request;
+    elsif v_request.entity_type = 'purchase_invoice' then
+      -- Same reasoning as the branches above — the internal helper, not
+      -- post_invoice(), since authority was already verified against the
+      -- approval chain, not the final approver's own users.role. Always
+      -- 'purchase' — this entity_type only ever represents a purchase
+      -- invoice submission (see submit_purchase_invoice()); sales
+      -- invoicing has no approval gate.
+      v_invoice := public._post_invoice_core(
+        v_company_id, 'purchase',
+        (v_request.payload ->> 'p_party_id')::uuid,
+        (v_request.payload ->> 'p_invoice_date')::date,
+        (v_request.payload ->> 'p_revenue_expense_account_id')::uuid,
+        v_request.payload -> 'p_line_items',
+        (v_request.payload ->> 'p_custom_order_id')::uuid
+      );
+      update public.approval_requests
+        set status = 'approved', result_entity_id = v_invoice.id, updated_at = now()
+        where id = p_request_id
+        returning * into v_request;
+    elsif v_request.entity_type = 'wastage' then
+      -- Same reasoning as the branches above. Note approval_requests.amount
+      -- here holds QUANTITY, not cost — wastage's cost is only known once
+      -- consume_item_fefo() actually runs inside the core, so it can't be
+      -- previewed before consuming stock; see submit_wastage().
+      v_wastage := public._post_wastage_core(
+        v_company_id,
+        (v_request.payload ->> 'p_item_id')::uuid,
+        (v_request.payload ->> 'p_quantity')::numeric,
+        v_request.payload ->> 'p_reason',
+        (v_request.payload ->> 'p_wastage_date')::date
+      );
+      update public.approval_requests
+        set status = 'approved', result_entity_id = v_wastage.id, updated_at = now()
+        where id = p_request_id
+        returning * into v_request;
+    elsif v_request.entity_type = 'project_invoice' then
+      -- Same reasoning as the branches above — _post_project_invoice_core(),
+      -- not post_project_invoice(). p_timesheet_ids round-trips through
+      -- jsonb as a plain string array; array(select
+      -- jsonb_array_elements_text(...))::uuid[] converts it back.
+      v_invoice := public._post_project_invoice_core(
+        v_company_id,
+        (v_request.payload ->> 'p_project_id')::uuid,
+        (v_request.payload ->> 'p_invoice_date')::date,
+        (v_request.payload ->> 'p_item_id')::uuid,
+        (v_request.payload ->> 'p_revenue_expense_account_id')::uuid,
+        array(select jsonb_array_elements_text(v_request.payload -> 'p_timesheet_ids'))::uuid[]
+      );
+      update public.approval_requests
+        set status = 'approved', result_entity_id = v_invoice.id, updated_at = now()
+        where id = p_request_id
+        returning * into v_request;
+    elsif v_request.entity_type = 'expense_claim' then
+      -- Same reasoning as the branches above — _post_expense_claim_core(),
+      -- not post_expense_claim(), since authority was already verified
+      -- against the approval chain, not the final approver's own
+      -- users.role.
+      v_claim := public._post_expense_claim_core(
+        v_company_id,
+        (v_request.payload ->> 'p_employee_id')::uuid,
+        (v_request.payload ->> 'p_claim_date')::date,
+        v_request.payload ->> 'p_description',
+        v_request.payload ->> 'p_category',
+        (v_request.payload ->> 'p_amount')::numeric,
+        (v_request.payload ->> 'p_expense_account_id')::uuid,
+        (v_request.payload ->> 'p_bank_account_id')::uuid
+      );
+      update public.approval_requests
+        set status = 'approved', result_entity_id = v_claim.id, updated_at = now()
+        where id = p_request_id
+        returning * into v_request;
+    elsif v_request.entity_type = 'access_request' then
+      -- Same reasoning as the branches above — _grant_access_core(), not
+      -- grant_access(), since authority was already verified against the
+      -- approval chain, not the final approver's own users.role.
+      v_grant := public._grant_access_core(
+        v_company_id,
+        (v_request.payload ->> 'p_employee_id')::uuid,
+        v_request.payload ->> 'p_system_name',
+        v_request.payload ->> 'p_access_level',
+        v_request.payload ->> 'p_reason'
+      );
+      update public.approval_requests
+        set status = 'approved', result_entity_id = v_grant.id, updated_at = now()
+        where id = p_request_id
+        returning * into v_request;
+    else
+      raise exception 'Unknown entity_type: %', v_request.entity_type;
+    end if;
+  end if;
+
+  return v_request;
+end;
+$$;
+
+grant execute on function public.approve_request(uuid, text) to authenticated;
+
+create function public.reject_request(p_request_id uuid, p_comment text default null)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_request public.approval_requests;
+  v_required_role text;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null then
+    raise exception 'Not authenticated.';
+  end if;
+
+  select * into v_request from public.approval_requests
+    where id = p_request_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Approval request not found in your company.';
+  end if;
+  if v_request.status <> 'pending' then
+    raise exception 'This request is % and cannot be rejected.', v_request.status;
+  end if;
+
+  v_required_role := v_request.approval_chain ->> v_request.current_step;
+  if not exists (
+    select 1 from public.user_app_roles
+    where user_id = auth.uid() and app_role = v_required_role::public.app_role_type
+  ) then
+    raise exception 'You do not hold the % role required for this approval step.', v_required_role;
+  end if;
+
+  update public.approval_requests
+    set status = 'rejected',
+        decisions = decisions || jsonb_build_object(
+          'step', current_step, 'app_role', v_required_role, 'user_id', auth.uid(),
+          'decision', 'rejected', 'comment', p_comment, 'decided_at', now()
+        ),
+        updated_at = now()
+    where id = p_request_id
+    returning * into v_request;
+
+  return v_request;
+end;
+$$;
+
+grant execute on function public.reject_request(uuid, text) to authenticated;
+
+-- ============================================================
+-- Phase 41 — Approval Workflows, second module: Payroll Runs
+-- Reuses the exact same approval_rules/approval_requests mechanism from
+-- Phase 40 (entity_type='payroll_run' instead of
+-- 'fixed_asset_capitalization') — approve_request() above already got its
+-- payroll_run branch added in place. Same zero-regression shape: below
+-- the lowest tier, a submission resolves immediately and
+-- post_payroll_run() itself is untouched either way.
+-- ============================================================
+
+create function public.submit_payroll_run(
+  p_employee_id uuid,
+  p_run_month date,
+  p_gross_salary numeric,
+  p_pf_deduction numeric default 0,
+  p_esi_deduction numeric default 0,
+  p_professional_tax_deduction numeric default 0,
+  p_other_deductions numeric default 0,
+  p_salary_expense_account_id uuid default null,
+  p_bank_account_id uuid default null
+)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_chain jsonb;
+  v_request public.approval_requests;
+  v_run public.payroll_runs;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to run payroll.';
+  end if;
+
+  select approval_chain into v_chain
+    from public.approval_rules
+    where company_id = v_company_id and entity_type = 'payroll_run' and min_amount <= p_gross_salary
+    order by min_amount desc
+    limit 1;
+  v_chain := coalesce(v_chain, '[]'::jsonb);
+
+  insert into public.approval_requests (
+    company_id, entity_type, requested_by, amount, payload, approval_chain, current_step, status
+  ) values (
+    v_company_id, 'payroll_run', auth.uid(), p_gross_salary,
+    jsonb_build_object(
+      'p_employee_id', p_employee_id, 'p_run_month', p_run_month, 'p_gross_salary', p_gross_salary,
+      'p_pf_deduction', p_pf_deduction, 'p_esi_deduction', p_esi_deduction,
+      'p_professional_tax_deduction', p_professional_tax_deduction, 'p_other_deductions', p_other_deductions,
+      'p_salary_expense_account_id', p_salary_expense_account_id, 'p_bank_account_id', p_bank_account_id
+    ),
+    v_chain, 0,
+    case when jsonb_array_length(v_chain) = 0 then 'approved' else 'pending' end
+  ) returning * into v_request;
+
+  if jsonb_array_length(v_chain) = 0 then
+    v_run := public._post_payroll_run_core(
+      v_company_id, p_employee_id, p_run_month, p_gross_salary, p_pf_deduction, p_esi_deduction,
+      p_professional_tax_deduction, p_other_deductions, p_salary_expense_account_id, p_bank_account_id
+    );
+    update public.approval_requests set result_entity_id = v_run.id
+      where id = v_request.id
+      returning * into v_request;
+  end if;
+
+  return v_request;
+end;
+$$;
+
+grant execute on function public.submit_payroll_run(uuid, date, numeric, numeric, numeric, numeric, numeric, uuid, uuid) to authenticated;
+
+-- Placeholder tiers, same reasoning as Phase 40's fixed-asset seed — meant
+-- to be edited to the real thresholds immediately via the Approval Rules
+-- UI, not a business decision made here.
+insert into public.approval_rules (company_id, entity_type, min_amount, approval_chain)
+select id, 'payroll_run', 0, '[]'::jsonb from public.companies
+union all
+select id, 'payroll_run', 100000, '["cfo"]'::jsonb from public.companies
+on conflict (company_id, entity_type, min_amount) do nothing;
+
+-- ============================================================
+-- Phase 42 — Approval Workflows, third module: Purchase Invoices
+-- Deliberately purchase-only, never sales — matches the spec's own
+-- worked example (a major purchase) and keeps the blast radius
+-- contained: post_invoice()'s three internal callers
+-- (finalize_subscription_cycle(), convert_quote_to_invoice(),
+-- post_project_invoice()) always pass p_type='sales', never 'purchase',
+-- so none of them are affected by this at all. Same
+-- approval_rules/approval_requests mechanism as Phases 40-41
+-- (entity_type='purchase_invoice'); approve_request() above already got
+-- its branch added in place.
+-- ============================================================
+
+create function public.submit_purchase_invoice(
+  p_party_id uuid,
+  p_invoice_date date,
+  p_revenue_expense_account_id uuid,
+  p_line_items jsonb,
+  p_custom_order_id uuid default null
+)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_chain jsonb;
+  v_taxable_subtotal numeric(14, 2);
+  v_request public.approval_requests;
+  v_invoice public.invoices;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to post invoices.';
+  end if;
+
+  if jsonb_array_length(p_line_items) = 0 then
+    raise exception 'An invoice needs at least one line item.';
+  end if;
+
+  -- Pre-tax subtotal only (sum of quantity*rate) — the same figure
+  -- post_invoice() itself computes as v_subtotal before GST, cheap to
+  -- recompute here just to resolve the applicable tier.
+  -- approval_rules.min_amount for entity_type='purchase_invoice' is
+  -- checked against THIS figure, not the GST-inclusive grand total —
+  -- flagged here since that's a real, deliberate choice, not an
+  -- oversight.
+  select sum(round((line ->> 'quantity')::numeric * (line ->> 'rate')::numeric, 2))
+    into v_taxable_subtotal
+    from jsonb_array_elements(p_line_items) as line;
+
+  select approval_chain into v_chain
+    from public.approval_rules
+    where company_id = v_company_id and entity_type = 'purchase_invoice' and min_amount <= v_taxable_subtotal
+    order by min_amount desc
+    limit 1;
+  v_chain := coalesce(v_chain, '[]'::jsonb);
+
+  insert into public.approval_requests (
+    company_id, entity_type, requested_by, amount, payload, approval_chain, current_step, status
+  ) values (
+    v_company_id, 'purchase_invoice', auth.uid(), v_taxable_subtotal,
+    jsonb_build_object(
+      'p_party_id', p_party_id, 'p_invoice_date', p_invoice_date,
+      'p_revenue_expense_account_id', p_revenue_expense_account_id,
+      'p_line_items', p_line_items, 'p_custom_order_id', p_custom_order_id
+    ),
+    v_chain, 0,
+    case when jsonb_array_length(v_chain) = 0 then 'approved' else 'pending' end
+  ) returning * into v_request;
+
+  if jsonb_array_length(v_chain) = 0 then
+    v_invoice := public._post_invoice_core(
+      v_company_id, 'purchase', p_party_id, p_invoice_date, p_revenue_expense_account_id, p_line_items, p_custom_order_id
+    );
+    update public.approval_requests set result_entity_id = v_invoice.id
+      where id = v_request.id
+      returning * into v_request;
+  end if;
+
+  return v_request;
+end;
+$$;
+
+grant execute on function public.submit_purchase_invoice(uuid, date, uuid, jsonb, uuid) to authenticated;
+
+-- Placeholder tiers, same reasoning as Phases 40-41's seeds — meant to be
+-- edited to the real thresholds immediately via the UI. Three tiers this
+-- time, matching the spec's own worked example more closely (COO+CFO for
+-- a large purchase, CEO added for a genuinely major one).
+insert into public.approval_rules (company_id, entity_type, min_amount, approval_chain)
+select id, 'purchase_invoice', 0, '[]'::jsonb from public.companies
+union all
+select id, 'purchase_invoice', 50000, '["coo", "cfo"]'::jsonb from public.companies
+union all
+select id, 'purchase_invoice', 500000, '["coo", "cfo", "ceo"]'::jsonb from public.companies
+on conflict (company_id, entity_type, min_amount) do nothing;
+
+-- ============================================================
+-- Phase 43 — Approval Workflows, fourth module: Wastage
+-- Matches the spec's own Kitchen Manager worked example ("Wastage —
+-- Staff → record, Kitchen Manager → approve, COO → approve if above
+-- threshold"). Same approval_rules/approval_requests mechanism;
+-- approve_request() above already got its branch added in place.
+--
+-- Real deviation from Phases 40-42's threshold basis, flagged
+-- explicitly: approval_rules.min_amount here is checked against
+-- QUANTITY, not cost. Wastage's cost is computed by consume_item_fefo()
+-- DURING posting (it depends on which batches actually get consumed),
+-- so there's no cheap way to preview it before a submission is either
+-- posted or held for approval — unlike fixed assets/payroll/purchases,
+-- where the amount was always a known input. Quantity is the one figure
+-- knowable upfront.
+-- ============================================================
+
+create function public.submit_wastage(
+  p_item_id uuid,
+  p_quantity numeric,
+  p_reason text,
+  p_wastage_date date
+)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_chain jsonb;
+  v_request public.approval_requests;
+  v_wastage public.wastage;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to record wastage.';
+  end if;
+  if p_reason not in ('spoilage', 'expired', 'damaged', 'production_loss', 'preparation_loss', 'quality_rejection', 'other') then
+    raise exception 'Invalid wastage reason: %', p_reason;
+  end if;
+
+  select approval_chain into v_chain
+    from public.approval_rules
+    where company_id = v_company_id and entity_type = 'wastage' and min_amount <= p_quantity
+    order by min_amount desc
+    limit 1;
+  v_chain := coalesce(v_chain, '[]'::jsonb);
+
+  insert into public.approval_requests (
+    company_id, entity_type, requested_by, amount, payload, approval_chain, current_step, status
+  ) values (
+    v_company_id, 'wastage', auth.uid(), p_quantity,
+    jsonb_build_object(
+      'p_item_id', p_item_id, 'p_quantity', p_quantity, 'p_reason', p_reason, 'p_wastage_date', p_wastage_date
+    ),
+    v_chain, 0,
+    case when jsonb_array_length(v_chain) = 0 then 'approved' else 'pending' end
+  ) returning * into v_request;
+
+  if jsonb_array_length(v_chain) = 0 then
+    v_wastage := public._post_wastage_core(v_company_id, p_item_id, p_quantity, p_reason, p_wastage_date);
+    update public.approval_requests set result_entity_id = v_wastage.id
+      where id = v_request.id
+      returning * into v_request;
+  end if;
+
+  return v_request;
+end;
+$$;
+
+grant execute on function public.submit_wastage(uuid, numeric, text, date) to authenticated;
+
+-- Placeholder tier, meant to be edited to the real quantity threshold
+-- immediately via the UI. min_amount=0/chain=[] reproduces today's
+-- immediate-post behavior exactly (matches every earlier phase's seed).
+insert into public.approval_rules (company_id, entity_type, min_amount, approval_chain)
+select id, 'wastage', 0, '[]'::jsonb from public.companies
+union all
+select id, 'wastage', 50, '["kitchen_manager", "coo"]'::jsonb from public.companies
+on conflict (company_id, entity_type, min_amount) do nothing;
+
+-- ============================================================
+-- Phase 44 — Approval Workflows, fifth module: Project Invoicing
+-- Matches the spec's Consulting chain (Employee -> Project Manager ->
+-- COO -> CFO/Accountant -> Invoice/Financial Posting). The "Employee
+-- submits a timesheet" and "Project Manager approves it" steps already
+-- exist as a separate, pre-existing feature (timesheets.approval_status)
+-- — post_project_invoice() already refuses to invoice an unapproved
+-- timesheet. This phase gates the remaining step: the actual invoicing
+-- action itself, above a configurable amount. Same
+-- approval_rules/approval_requests mechanism as Phases 40-43;
+-- approve_request() above already got its branch added in place.
+-- Threshold basis: the pre-tax subtotal of the selected timesheets
+-- (sum of hours * billing_rate) — a known input before posting, same
+-- reasoning as Phase 42's purchase-invoice subtotal.
+-- ============================================================
+
+create function public.submit_project_invoice(
+  p_project_id uuid,
+  p_invoice_date date,
+  p_item_id uuid,
+  p_revenue_expense_account_id uuid,
+  p_timesheet_ids uuid[]
+)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_chain jsonb;
+  v_amount numeric(14, 2);
+  v_request public.approval_requests;
+  v_invoice public.invoices;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to invoice projects.';
+  end if;
+
+  if array_length(p_timesheet_ids, 1) is null or array_length(p_timesheet_ids, 1) = 0 then
+    raise exception 'Select at least one timesheet entry to invoice.';
+  end if;
+
+  select coalesce(sum(hours * billing_rate), 0) into v_amount
+    from public.timesheets
+    where id = any(p_timesheet_ids) and company_id = v_company_id;
+
+  select approval_chain into v_chain
+    from public.approval_rules
+    where company_id = v_company_id and entity_type = 'project_invoice' and min_amount <= v_amount
+    order by min_amount desc
+    limit 1;
+  v_chain := coalesce(v_chain, '[]'::jsonb);
+
+  insert into public.approval_requests (
+    company_id, entity_type, requested_by, amount, payload, approval_chain, current_step, status
+  ) values (
+    v_company_id, 'project_invoice', auth.uid(), v_amount,
+    jsonb_build_object(
+      'p_project_id', p_project_id, 'p_invoice_date', p_invoice_date, 'p_item_id', p_item_id,
+      'p_revenue_expense_account_id', p_revenue_expense_account_id, 'p_timesheet_ids', p_timesheet_ids
+    ),
+    v_chain, 0,
+    case when jsonb_array_length(v_chain) = 0 then 'approved' else 'pending' end
+  ) returning * into v_request;
+
+  if jsonb_array_length(v_chain) = 0 then
+    v_invoice := public._post_project_invoice_core(
+      v_company_id, p_project_id, p_invoice_date, p_item_id, p_revenue_expense_account_id, p_timesheet_ids
+    );
+    update public.approval_requests set result_entity_id = v_invoice.id
+      where id = v_request.id
+      returning * into v_request;
+  end if;
+
+  return v_request;
+end;
+$$;
+
+grant execute on function public.submit_project_invoice(uuid, date, uuid, uuid, uuid[]) to authenticated;
+
+-- Placeholder tier, meant to be edited to the real threshold immediately
+-- via the UI. min_amount=0/chain=[] reproduces today's immediate-post
+-- behavior exactly.
+insert into public.approval_rules (company_id, entity_type, min_amount, approval_chain)
+select id, 'project_invoice', 0, '[]'::jsonb from public.companies
+union all
+select id, 'project_invoice', 50000, '["coo", "cfo"]'::jsonb from public.companies
+on conflict (company_id, entity_type, min_amount) do nothing;
+
+-- ============================================================
+-- Phase 45 — Approval Workflows, sixth module: Expense Claims
+--
+-- Unlike Phases 40-44, there is no pre-existing posting function to
+-- gate here — employee expense reimbursement has never been a ledger-
+-- posted transaction in this app. project_expenses (Phase 31, the
+-- Consulting module) stays exactly as-is: a plain, unposted,
+-- project-scoped cost record used only by project_profitability(). This
+-- is a deliberately separate, standalone, company-wide feature — an
+-- employee's reimbursement isn't necessarily tied to any project, and
+-- conflating the two would mean picking a project for a claim that may
+-- not have one.
+--
+-- Posting model: pay immediately, same simplicity as post_payroll_run()
+-- — debit the chosen expense account, credit the chosen bank/cash
+-- account, one entry_group_id. No new "payable" system account needed;
+-- accounts_payable already means vendor payables (tied to a party),
+-- and an employee isn't a party in this schema, so reusing it would be
+-- a hack. If a genuine pay-later flow is ever needed, that's a real
+-- schema change to propose then, not something to force in here.
+--
+-- Threshold basis: the claim amount itself — a known input before
+-- posting, same reasoning as fixed-asset cost/payroll gross salary.
+-- ============================================================
+create table public.expense_claims (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  employee_id uuid not null references public.employees (id),
+  claim_date date not null,
+  description text not null,
+  -- Free text, same loose reasoning as items.category and
+  -- project_expenses.category — a handful of labels doesn't justify a
+  -- lookup table.
+  category text,
+  amount numeric(14, 2) not null check (amount > 0),
+  expense_account_id uuid not null references public.chart_of_accounts (id),
+  bank_account_id uuid not null references public.chart_of_accounts (id),
+  entry_group_id uuid not null,
+  created_at timestamptz not null default now()
+);
+
+alter table public.expense_claims enable row level security;
+
+-- No insert/update/delete policies — all writes happen through
+-- post_expense_claim()/submit_expense_claim() (SECURITY DEFINER), same
+-- reasoning as invoices/payroll_runs. Employee role narrowed to own
+-- records from creation (user_app_roles and current_user_linked_
+-- employee_id already exist by this point in the file, unlike Phase 39's
+-- original tables, so no drop+recreate-at-end-of-file trick is needed
+-- here).
+create policy expense_claims_select on public.expense_claims
+  for select using (
+    company_id = public.current_user_company_id()
+    and (
+      public.current_user_role() <> 'viewer'
+      or not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'employee')
+      or employee_id = public.current_user_linked_employee_id()
+    )
+  );
+
+-- Trusted internal helper — no authorization check, same reasoning as
+-- every other _xxx_core() function above. post_expense_claim() below is
+-- the direct-call entry point and checks admin/accountant itself;
+-- submit_expense_claim()/approve_request() call this directly instead,
+-- since authority was already verified by the time either reaches it.
+create function public._post_expense_claim_core(
+  p_company_id uuid,
+  p_employee_id uuid,
+  p_claim_date date,
+  p_description text,
+  p_category text,
+  p_amount numeric,
+  p_expense_account_id uuid,
+  p_bank_account_id uuid
+)
+returns public.expense_claims
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid := p_company_id;
+  v_entry_group uuid := gen_random_uuid();
+  v_claim public.expense_claims;
+begin
+  if not exists (select 1 from public.employees where id = p_employee_id and company_id = v_company_id) then
+    raise exception 'Employee not found in your company.';
+  end if;
+  if not exists (
+    select 1 from public.chart_of_accounts
+    where id = p_expense_account_id and company_id = v_company_id and type = 'expense'
+  ) then
+    raise exception 'Expense account not found, not in your company, or not an expense account.';
+  end if;
+  if not exists (
+    select 1 from public.chart_of_accounts
+    where id = p_bank_account_id and company_id = v_company_id and type = 'asset'
+  ) then
+    raise exception 'Bank/cash account not found, not in your company, or not an asset account.';
+  end if;
+
+  insert into public.expense_claims (
+    company_id, employee_id, claim_date, description, category, amount,
+    expense_account_id, bank_account_id, entry_group_id
+  ) values (
+    v_company_id, p_employee_id, p_claim_date, p_description, p_category, p_amount,
+    p_expense_account_id, p_bank_account_id, v_entry_group
+  ) returning * into v_claim;
+
+  insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+  values
+    (v_company_id, v_entry_group, p_claim_date, p_expense_account_id, p_amount, 0, 'expense_claim', v_claim.id),
+    (v_company_id, v_entry_group, p_claim_date, p_bank_account_id, 0, p_amount, 'expense_claim', v_claim.id);
+
+  return v_claim;
+end;
+$$;
+
+create function public.post_expense_claim(
+  p_employee_id uuid,
+  p_claim_date date,
+  p_description text,
+  p_category text,
+  p_amount numeric,
+  p_expense_account_id uuid,
+  p_bank_account_id uuid
+)
+returns public.expense_claims
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to post expense claims.';
+  end if;
+  return public._post_expense_claim_core(
+    v_company_id, p_employee_id, p_claim_date, p_description, p_category, p_amount,
+    p_expense_account_id, p_bank_account_id
+  );
+end;
+$$;
+
+grant execute on function public.post_expense_claim(uuid, date, text, text, numeric, uuid, uuid) to authenticated;
+
+create function public.submit_expense_claim(
+  p_employee_id uuid,
+  p_claim_date date,
+  p_description text,
+  p_category text,
+  p_amount numeric,
+  p_expense_account_id uuid,
+  p_bank_account_id uuid
+)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_chain jsonb;
+  v_request public.approval_requests;
+  v_claim public.expense_claims;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to post expense claims.';
+  end if;
+
+  select approval_chain into v_chain
+    from public.approval_rules
+    where company_id = v_company_id and entity_type = 'expense_claim' and min_amount <= p_amount
+    order by min_amount desc
+    limit 1;
+  v_chain := coalesce(v_chain, '[]'::jsonb);
+
+  insert into public.approval_requests (
+    company_id, entity_type, requested_by, amount, payload, approval_chain, current_step, status
+  ) values (
+    v_company_id, 'expense_claim', auth.uid(), p_amount,
+    jsonb_build_object(
+      'p_employee_id', p_employee_id, 'p_claim_date', p_claim_date, 'p_description', p_description,
+      'p_category', p_category, 'p_amount', p_amount,
+      'p_expense_account_id', p_expense_account_id, 'p_bank_account_id', p_bank_account_id
+    ),
+    v_chain, 0,
+    case when jsonb_array_length(v_chain) = 0 then 'approved' else 'pending' end
+  ) returning * into v_request;
+
+  if jsonb_array_length(v_chain) = 0 then
+    v_claim := public._post_expense_claim_core(
+      v_company_id, p_employee_id, p_claim_date, p_description, p_category, p_amount,
+      p_expense_account_id, p_bank_account_id
+    );
+    update public.approval_requests set result_entity_id = v_claim.id
+      where id = v_request.id
+      returning * into v_request;
+  end if;
+
+  return v_request;
+end;
+$$;
+
+grant execute on function public.submit_expense_claim(uuid, date, text, text, numeric, uuid, uuid) to authenticated;
+
+-- Placeholder tier, meant to be edited to the real threshold immediately
+-- via the UI. min_amount=0/chain=[] means every claim posts immediately
+-- until a real threshold is set. 5,000 -> single-step CFO approval is a
+-- reasonable starting default, not a compliance-blessed number.
+insert into public.approval_rules (company_id, entity_type, min_amount, approval_chain)
+select id, 'expense_claim', 0, '[]'::jsonb from public.companies
+union all
+select id, 'expense_claim', 5000, '["cfo"]'::jsonb from public.companies
+on conflict (company_id, entity_type, min_amount) do nothing;
+
+-- ============================================================
+-- Phase 46 — Approval Workflows, seventh module: Technology Access
+-- Requests
+--
+-- Matches the spec's Technology/CTO chain, but is unlike every module in
+-- Phases 40-45 in two ways:
+--
+-- 1. No financial posting at all. "Approval" here means recording that
+--    access was granted, not posting a journal entry — the result table
+--    (access_grants) has no entry_group_id. This app has no ability to
+--    actually provision access on a real external system (AWS, a vendor
+--    portal, a production database); granting here is a tracked,
+--    approved record of a decision a human still has to go act on
+--    outside this app. It's a request/approval/audit trail, not a
+--    technical provisioning system — flagged so it isn't mistaken for
+--    one.
+--
+-- 2. Only ONE approval_rules tier is seeded (min_amount=0), not several.
+--    Every other module gates on a real, varying amount; an access
+--    request has no such number. `amount` is stored as 0 purely because
+--    approval_requests.amount is a required column — semantically
+--    unused here. The reused amount/tier mechanism still works exactly
+--    as designed (a single min_amount=0 row resolves every submission
+--    to the same configurable chain), it just never needs a second
+--    tier. If risk-based tiering by access level ever becomes a real
+--    need, that's a genuine schema addition to propose then.
+--
+-- Submission stays admin/accountant-only, same convention as every
+-- other module — deliberately NOT self-service, even though a real
+-- employee requesting their own access is the more natural shape for
+-- this feature. approval_requests_select today is company-wide, not
+-- narrowed to the requester (fine so far, since only admin/accountant
+-- could ever create a row); opening self-service submission to any
+-- viewer+employee-app-role user would let them see every OTHER pending
+-- approval request in the company too (fixed asset capitalizations,
+-- payroll runs, purchase invoices, etc.), which is a real RLS gap, not
+-- a hypothetical one. Narrowing approval_requests_select to fix that is
+-- a bigger, separate change than this phase's scope — flagged as
+-- future work if self-service ever becomes a real requirement.
+--
+-- Revocation is a separate, immediate action (revoke_access()), not
+-- gated through the approval mechanism — revoking access tightens
+-- security rather than loosening it, so it doesn't need the same
+-- multi-step sign-off granting does.
+-- ============================================================
+create table public.access_grants (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  employee_id uuid not null references public.employees (id),
+  -- Free text, same loose reasoning as expense_claims.category — the set
+  -- of systems/tools this company's employees might need access to
+  -- isn't fixed enough to justify a lookup table.
+  system_name text not null,
+  access_level text not null,
+  reason text,
+  status text not null default 'active' check (status in ('active', 'revoked')),
+  granted_at timestamptz not null default now(),
+  revoked_at timestamptz,
+  revoked_by uuid references public.users (id),
+  created_at timestamptz not null default now(),
+  constraint access_grants_revoked_consistency
+    check ((status = 'revoked') = (revoked_at is not null))
+);
+
+alter table public.access_grants enable row level security;
+
+-- No insert/update/delete policies — all writes happen through
+-- grant_access()/submit_access_request()/revoke_access() (SECURITY
+-- DEFINER), same reasoning as every other gated module. Employee role
+-- narrowed to own records, same pattern as expense_claims/payroll_runs.
+create policy access_grants_select on public.access_grants
+  for select using (
+    company_id = public.current_user_company_id()
+    and (
+      public.current_user_role() <> 'viewer'
+      or not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'employee')
+      or employee_id = public.current_user_linked_employee_id()
+    )
+  );
+
+-- Trusted internal helper — no authorization check, same reasoning as
+-- every other _xxx_core() function above. grant_access() below is the
+-- direct-call entry point and checks admin/accountant itself;
+-- submit_access_request()/approve_request() call this directly instead,
+-- since authority was already verified by the time either reaches it.
+create function public._grant_access_core(
+  p_company_id uuid,
+  p_employee_id uuid,
+  p_system_name text,
+  p_access_level text,
+  p_reason text
+)
+returns public.access_grants
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid := p_company_id;
+  v_grant public.access_grants;
+begin
+  if not exists (select 1 from public.employees where id = p_employee_id and company_id = v_company_id) then
+    raise exception 'Employee not found in your company.';
+  end if;
+
+  insert into public.access_grants (company_id, employee_id, system_name, access_level, reason)
+  values (v_company_id, p_employee_id, p_system_name, p_access_level, p_reason)
+  returning * into v_grant;
+
+  return v_grant;
+end;
+$$;
+
+create function public.grant_access(
+  p_employee_id uuid,
+  p_system_name text,
+  p_access_level text,
+  p_reason text
+)
+returns public.access_grants
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to grant access.';
+  end if;
+  return public._grant_access_core(v_company_id, p_employee_id, p_system_name, p_access_level, p_reason);
+end;
+$$;
+
+grant execute on function public.grant_access(uuid, text, text, text) to authenticated;
+
+create function public.submit_access_request(
+  p_employee_id uuid,
+  p_system_name text,
+  p_access_level text,
+  p_reason text
+)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_chain jsonb;
+  v_request public.approval_requests;
+  v_grant public.access_grants;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+    raise exception 'Not authorized to request access.';
+  end if;
+
+  -- amount is always 0 here — see the Phase 46 header comment above.
+  select approval_chain into v_chain
+    from public.approval_rules
+    where company_id = v_company_id and entity_type = 'access_request' and min_amount <= 0
+    order by min_amount desc
+    limit 1;
+  v_chain := coalesce(v_chain, '[]'::jsonb);
+
+  insert into public.approval_requests (
+    company_id, entity_type, requested_by, amount, payload, approval_chain, current_step, status
+  ) values (
+    v_company_id, 'access_request', auth.uid(), 0,
+    jsonb_build_object(
+      'p_employee_id', p_employee_id, 'p_system_name', p_system_name,
+      'p_access_level', p_access_level, 'p_reason', p_reason
+    ),
+    v_chain, 0,
+    case when jsonb_array_length(v_chain) = 0 then 'approved' else 'pending' end
+  ) returning * into v_request;
+
+  if jsonb_array_length(v_chain) = 0 then
+    v_grant := public._grant_access_core(v_company_id, p_employee_id, p_system_name, p_access_level, p_reason);
+    update public.approval_requests set result_entity_id = v_grant.id
+      where id = v_request.id
+      returning * into v_request;
+  end if;
+
+  return v_request;
+end;
+$$;
+
+grant execute on function public.submit_access_request(uuid, text, text, text) to authenticated;
+
+create function public.revoke_access(p_grant_id uuid, p_reason text default null)
+returns public.access_grants
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_grant public.access_grants;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null then
+    raise exception 'Not authenticated.';
+  end if;
+  if public.current_user_role() not in ('admin', 'accountant')
+     and not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'cto') then
+    raise exception 'Not authorized to revoke access.';
+  end if;
+
+  select * into v_grant from public.access_grants where id = p_grant_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Access grant not found in your company.';
+  end if;
+  if v_grant.status = 'revoked' then
+    raise exception 'This access grant is already revoked.';
+  end if;
+
+  update public.access_grants
+    set status = 'revoked', revoked_at = now(), revoked_by = auth.uid(), reason = coalesce(p_reason, reason)
+    where id = p_grant_id
+    returning * into v_grant;
+
+  return v_grant;
+end;
+$$;
+
+grant execute on function public.revoke_access(uuid, text) to authenticated;
+
+-- Single tier, deliberately — see the Phase 46 header comment above for
+-- why this module only ever needs min_amount=0. Edit the chain via the
+-- Roles & Permissions UI if a different approver than CTO is wanted.
+insert into public.approval_rules (company_id, entity_type, min_amount, approval_chain)
+select id, 'access_request', 0, '["cto"]'::jsonb from public.companies
+on conflict (company_id, entity_type, min_amount) do nothing;
