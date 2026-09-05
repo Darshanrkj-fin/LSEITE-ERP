@@ -23,3 +23,18 @@ not_found_handling = "single-page-application"
 # all). Same two schedules the old vercel.json crons used.
 [triggers]
 crons = ["0 6 * * 1", "0 5 * * *"]
+
+# Mirrors the dashboard's Settings > Observability panel — committed here
+# so it survives a redeploy instead of resetting. Unlike a classic Pages
+# project (which rejects this block entirely), a plain Worker supports it.
+# head_sampling_rate 1 = every invocation, not a sample.
+[observability.logs]
+enabled = true
+invocation_logs = true
+head_sampling_rate = 1
+persist = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
+persist = true
