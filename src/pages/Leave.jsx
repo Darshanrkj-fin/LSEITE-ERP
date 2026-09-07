@@ -7,7 +7,7 @@ const LEAVE_TYPES = ['sick', 'casual', 'earned', 'unpaid', 'other']
 
 export function Leave() {
   const { profile } = useAuth()
-  const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
 
   const [records, setRecords] = useState([])
   const [employees, setEmployees] = useState([])

@@ -12,7 +12,7 @@ const emptyTask = { name: '', estimated_hours: '' }
 export function ProjectDetail() {
   const { id } = useParams()
   const { profile } = useAuth()
-  const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
 
   const [project, setProject] = useState(null)
   const [profitability, setProfitability] = useState(null)
@@ -34,6 +34,8 @@ export function ProjectDetail() {
   const [invoiceDate, setInvoiceDate] = useState(today())
   const [invoicing, setInvoicing] = useState(false)
   const [info, setInfo] = useState(null)
+  const myRoles = profile?.app_roles ?? []
+  const [myEmployeeId, setMyEmployeeId] = useState(null)
 
   const load = async () => {
     setLoading(true)
@@ -46,6 +48,7 @@ export function ProjectDetail() {
       { data: employeeRows },
       { data: itemRows },
       { data: accountRows },
+      { data: myEmployeeRow },
     ] = await Promise.all([
       supabase.from('projects').select('*, parties(name)').eq('id', id).single(),
       supabase.rpc('project_profitability', { p_project_id: id }),
@@ -55,6 +58,7 @@ export function ProjectDetail() {
       supabase.from('employees').select('id, name').eq('status', 'active').order('name'),
       supabase.from('items').select('id, name').eq('type', 'service').order('name'),
       supabase.from('chart_of_accounts').select('id, name').eq('type', 'income').order('name'),
+      supabase.from('employees').select('id').eq('user_id', profile.id).maybeSingle(),
     ])
     if (projError) setError(projError.message)
     else setProject(proj)
@@ -65,6 +69,7 @@ export function ProjectDetail() {
     setEmployees(employeeRows ?? [])
     setItems(itemRows ?? [])
     setIncomeAccounts(accountRows ?? [])
+    setMyEmployeeId(myEmployeeRow?.id ?? null)
     setLoading(false)
   }
 
@@ -113,7 +118,10 @@ export function ProjectDetail() {
 
   const setApproval = async (timesheetId, status) => {
     setError(null)
-    const { error: updateError } = await supabase.from('timesheets').update({ approval_status: status }).eq('id', timesheetId)
+    const { error: updateError } = await supabase.rpc('set_timesheet_approval', {
+      p_timesheet_id: timesheetId,
+      p_status: status,
+    })
     if (updateError) {
       setError(updateError.message)
       return
@@ -151,6 +159,8 @@ export function ProjectDetail() {
 
   const invoiceableTimesheets = timesheets.filter((t) => t.billable && t.approval_status === 'approved' && !t.invoice_id)
   const selectedIds = Object.keys(selectedTimesheets)
+  const canApproveTimesheets =
+    canEdit || (myRoles.includes('project_manager') && myEmployeeId && project?.project_manager_employee_id === myEmployeeId)
 
   const handleInvoice = async (e) => {
     e.preventDefault()
@@ -268,7 +278,7 @@ export function ProjectDetail() {
               <th className="py-2 pr-4">Billable</th>
               <th className="py-2 pr-4">Rate</th>
               <th className="py-2 pr-4">Status</th>
-              {canEdit && <th className="py-2 pr-4">Actions</th>}
+              {canApproveTimesheets && <th className="py-2 pr-4">Actions</th>}
             </tr>
           </thead>
           <tbody>
@@ -288,7 +298,7 @@ export function ProjectDetail() {
                   <td className="py-1 pr-4">
                     {t.invoice_id ? 'Invoiced' : <span className="capitalize">{t.approval_status}</span>}
                   </td>
-                  {canEdit && (
+                  {canApproveTimesheets && (
                     <td className="space-x-2 py-1 pr-4">
                       {!t.invoice_id && t.approval_status !== 'approved' && (
                         <button onClick={() => setApproval(t.id, 'approved')} className="text-ink hover:underline">

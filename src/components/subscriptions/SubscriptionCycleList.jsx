@@ -5,7 +5,7 @@ import { useAuth } from '../../context/AuthContext'
 
 export function SubscriptionCycleList({ basePath }) {
   const { profile } = useAuth()
-  const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
 
   const [cycles, setCycles] = useState([])
   const [loading, setLoading] = useState(true)

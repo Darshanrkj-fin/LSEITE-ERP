@@ -6,7 +6,7 @@ const today = () => new Date().toISOString().slice(0, 10)
 
 export function ExpenseClaims() {
   const { profile } = useAuth()
-  const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
 
   const [employees, setEmployees] = useState([])
   const [expenseAccounts, setExpenseAccounts] = useState([])
@@ -24,6 +24,7 @@ export function ExpenseClaims() {
   const [amount, setAmount] = useState('')
   const [expenseAccountId, setExpenseAccountId] = useState('')
   const [bankAccountId, setBankAccountId] = useState('')
+  const [busyId, setBusyId] = useState(null)
 
   const load = async () => {
     setLoading(true)
@@ -76,6 +77,19 @@ export function ExpenseClaims() {
     setDescription('')
     setCategory('')
     setAmount('')
+    load()
+  }
+
+  const handleCancel = async (claimId) => {
+    if (!window.confirm('Cancel this expense claim? This reverses the posted journal entry.')) return
+    setError(null)
+    setBusyId(claimId)
+    const { error: rpcError } = await supabase.rpc('cancel_expense_claim', { p_expense_claim_id: claimId })
+    setBusyId(null)
+    if (rpcError) {
+      setError(rpcError.message)
+      return
+    }
     load()
   }
 
@@ -208,6 +222,8 @@ export function ExpenseClaims() {
             <th className="py-2 pr-4">Description</th>
             <th className="py-2 pr-4">Category</th>
             <th className="py-2 pr-4">Amount</th>
+            <th className="py-2 pr-4">Status</th>
+            {canEdit && <th className="py-2 pr-4">Actions</th>}
           </tr>
         </thead>
         <tbody>
@@ -218,11 +234,28 @@ export function ExpenseClaims() {
               <td className="py-2 pr-4">{c.description}</td>
               <td className="py-2 pr-4 text-muted">{c.category || ''}</td>
               <td className="py-2 pr-4">{c.amount}</td>
+              <td className="py-2 pr-4">
+                <span className={c.status === 'posted' ? 'text-ink' : 'text-clay'}>{c.status}</span>
+              </td>
+              {canEdit && (
+                <td className="py-2 pr-4">
+                  {c.status === 'posted' && (
+                    <button
+                      type="button"
+                      disabled={busyId === c.id}
+                      onClick={() => handleCancel(c.id)}
+                      className="text-clay hover:underline disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </td>
+              )}
             </tr>
           ))}
           {claims.length === 0 && (
             <tr>
-              <td colSpan={5} className="py-4 text-muted">
+              <td colSpan={canEdit ? 7 : 6} className="py-4 text-muted">
                 No expense claims posted yet.
               </td>
             </tr>

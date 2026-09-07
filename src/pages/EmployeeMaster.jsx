@@ -6,7 +6,7 @@ const emptyEmployee = { name: '', employee_code: '', join_date: '', monthly_gros
 
 export function EmployeeMaster() {
   const { profile } = useAuth()
-  const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
 
   const [employees, setEmployees] = useState([])
   const [departments, setDepartments] = useState([])

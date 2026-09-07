@@ -15,7 +15,7 @@ export function QuoteDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
   const { profile, session } = useAuth()
-  const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
 
   const [quote, setQuote] = useState(null)
   const [lineItems, setLineItems] = useState([])

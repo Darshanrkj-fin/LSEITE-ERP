@@ -43,32 +43,36 @@ create table public.companies (
 -- ============================================================
 -- users (profile row linked 1:1 to Supabase Auth's auth.users)
 -- ============================================================
--- A native enum (not text + a check constraint) so the Supabase Table
--- Editor renders role as a dropdown instead of a free-text field — this
--- is still promoted only via the Table Editor (see the comment below),
--- so that UI is the actual day-to-day interface for it.
-create type public.user_role as enum ('admin', 'accountant', 'viewer');
-
+-- Phase 63: is_admin is the sole superuser bypass now — this table used
+-- to also carry a `role` enum (admin/accountant/viewer), which every RLS
+-- policy and RPC in the schema consulted directly. Phases 59-62 moved
+-- that entirely to is_admin (superuser) + user_app_roles/role_permissions
+-- (named business roles and their permission grants) — `role` had no
+-- remaining reader anywhere by the time this table was cut over, so it's
+-- not reproduced here at all in a fresh install.
 create table public.users (
   id uuid primary key references auth.users (id) on delete cascade,
   company_id uuid references public.companies (id),
   full_name text,
-  role public.user_role not null default 'viewer',
-  -- A second gate on top of role='admin', for the Manage Users feature
-  -- only (create/reset accounts) — every other admin capability is
-  -- unaffected. Deliberately a plain flag, not a generalized "levels"
-  -- system: nothing else in this app needs more than this one distinction.
-  -- No client-editable way to set this — same as role, promoted only via
-  -- the Supabase Table Editor.
+  -- The superuser bypass — current_user_is_admin() reads this directly.
+  -- No client-editable way to set this except update_user_admin_status()
+  -- (itself gated to an existing admin+can_manage_users caller) or the
+  -- Supabase Table Editor.
+  is_admin boolean not null default false,
+  -- A second gate on top of is_admin, for the Manage Users feature only
+  -- (create/reset accounts, toggling is_admin/can_manage_users on other
+  -- users) — every other admin capability is unaffected. Deliberately a
+  -- plain flag, not a generalized "levels" system: nothing else in this
+  -- app needs more than this one distinction.
   can_manage_users boolean not null default false,
   created_at timestamptz not null default now()
 );
 
 -- Auto-create a profile row whenever someone signs up via Supabase Auth.
 -- The first person to ever sign up becomes admin (and can_manage_users,
--- since they're the one setting up the company); everyone after is a
--- viewer until an admin promotes them (see Manage Users in the app, or
--- the Supabase Table Editor).
+-- since they're the one setting up the company); everyone after starts
+-- with no elevated access at all until an admin assigns one (see Manage
+-- Users / Roles & Permissions in the app, or the Supabase Table Editor).
 create or replace function public.handle_new_auth_user()
 returns trigger
 language plpgsql
@@ -79,17 +83,8 @@ declare
   is_first_user boolean;
 begin
   is_first_user := (select count(*) from public.users) = 0;
-  -- A CASE expression over two unknown-typed literals resolves to text,
-  -- not "unknown" — unlike a single bare literal, it does NOT pick up an
-  -- assignment cast to the target enum column automatically, and fails
-  -- with "column is of type user_role but expression is of type text".
-  -- The explicit ::public.user_role cast is required here.
-  insert into public.users (id, role, can_manage_users)
-  values (
-    new.id,
-    (case when is_first_user then 'admin' else 'viewer' end)::public.user_role,
-    is_first_user
-  );
+  insert into public.users (id, can_manage_users, is_admin)
+  values (new.id, is_first_user, is_first_user);
   return new;
 end;
 $$;
@@ -260,19 +255,12 @@ create constraint trigger journal_entries_balance_check
 -- ============================================================
 -- Row Level Security
 -- ============================================================
--- Explicit ::text cast: role is a Postgres enum (public.user_role), not
--- text, so every existing caller comparing current_user_role() = 'admin'
--- etc. keeps working unchanged against a plain string return type.
-create function public.current_user_role()
-returns text
-language sql
-stable
-security definer
-set search_path = public
-as $$
-  select role::text from public.users where id = auth.uid();
-$$;
-
+-- Phase 63: current_user_role() (the old role-enum reader) is gone —
+-- every RLS policy/RPC that once checked it moved to
+-- current_user_is_admin() (Phase 59) and/or
+-- current_user_has_permission('ledger.write') (Phase 60) back in
+-- Phases 59-61; this is just the final removal of the now-dead function
+-- itself, once role/user_role was actually dropped.
 create function public.current_user_company_id()
 returns uuid
 language sql
@@ -300,7 +288,7 @@ create policy companies_select on public.companies
 create policy companies_update on public.companies
   for update using (
     id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- Creates the first company row and assigns it to the calling user in one
@@ -399,7 +387,7 @@ grant execute on function public.bootstrap_company to authenticated;
 create policy users_select on public.users
   for select using (
     id = auth.uid()
-    or (public.current_user_role() = 'admin' and company_id = public.current_user_company_id())
+    or (public.current_user_is_admin() and company_id = public.current_user_company_id())
   );
 
 -- chart_of_accounts / parties / items: read all in your company,
@@ -409,19 +397,19 @@ create policy coa_select on public.chart_of_accounts
 create policy coa_write on public.chart_of_accounts
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy coa_update on public.chart_of_accounts
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 -- system_role is null excludes the 8 auto-seeded accounts from deletion —
 -- post_invoice()/cancel_invoice() depend on them always existing.
 create policy coa_delete on public.chart_of_accounts
   for delete using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
     and system_role is null
   );
 
@@ -430,17 +418,17 @@ create policy parties_select on public.parties
 create policy parties_write on public.parties
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy parties_update on public.parties
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy parties_delete on public.parties
   for delete using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 create policy items_select on public.items
@@ -448,17 +436,17 @@ create policy items_select on public.items
 create policy items_write on public.items
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy items_update on public.items
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy items_delete on public.items
   for delete using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- tax_rates: any authenticated user can read (needed to calculate GST on
@@ -467,11 +455,11 @@ create policy items_delete on public.items
 create policy tax_rates_select on public.tax_rates
   for select using (auth.role() = 'authenticated');
 create policy tax_rates_write on public.tax_rates
-  for insert with check (public.current_user_role() = 'admin');
+  for insert with check (public.current_user_is_admin());
 create policy tax_rates_update on public.tax_rates
-  for update using (public.current_user_role() = 'admin');
+  for update using (public.current_user_is_admin());
 create policy tax_rates_delete on public.tax_rates
-  for delete using (public.current_user_role() = 'admin');
+  for delete using (public.current_user_is_admin());
 
 -- journal_entries: read your company's ledger; insert only as
 -- admin/accountant. No update/delete policy at all — see comment above
@@ -481,7 +469,7 @@ create policy journal_entries_select on public.journal_entries
 create policy journal_entries_insert on public.journal_entries
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- ============================================================
@@ -508,6 +496,17 @@ create table public.invoices (
   status text not null default 'posted' check (status in ('posted', 'cancelled')),
   entry_group_id uuid not null,
   created_at timestamptz not null default now(),
+  -- Phase 49: sales-only (see _post_invoice_core()'s guard). Applied
+  -- per-line before GST, so subtotal/cgst/sgst/igst above already
+  -- reflect the discounted, post-discount taxable value — GST is
+  -- charged on the transaction value after a discount known at/before
+  -- the time of supply, per GST law, provided it's recorded on the
+  -- invoice itself (as this is). Flag for CA confirmation regardless,
+  -- per CLAUDE.md's compliance-judgment rule. discount_amount is stored
+  -- purely for display/audit — the actual rupee figure discounted off
+  -- the pre-discount (gross) line totals.
+  discount_pct numeric(5, 2) not null default 0 check (discount_pct >= 0 and discount_pct <= 100),
+  discount_amount numeric(14, 2) not null default 0 check (discount_amount >= 0),
   constraint invoices_unique_number unique (company_id, type, invoice_number),
   -- Must always hold: header totals are a SUM of the (already-rounded) line
   -- amounts, never recomputed independently — otherwise a 1-paisa drift
@@ -730,13 +729,29 @@ group by i.id;
 -- computes a running average for finished goods — see items.average_cost's
 -- comment). Not directly callable by clients — only ever invoked from
 -- inside another SECURITY DEFINER posting function.
-create function public.consume_item_fefo(
+-- Phase 56: gained p_warehouse_id (scopes FEFO batch selection to one
+-- warehouse instead of company-wide) and p_to_warehouse_id (mirrors each
+-- consumed batch-slice into a new batch at a destination warehouse —
+-- Phase 57's stock-transfer "move" semantics). Both default null: every
+-- existing caller (_post_invoice_core sales consumption,
+-- _post_production_entry_core raw-material consumption,
+-- _post_wastage_core, the R&D trial poster) needs zero changes —
+-- p_warehouse_id null resolves to the caller's own default warehouse
+-- (today's exact behavior, just now explicit), and p_to_warehouse_id
+-- null means plain consumption with no mirroring. Old 6-arg signature
+-- explicitly dropped first — Phase 49's lesson: CREATE OR REPLACE with
+-- an added parameter leaves the old arity behind as a second, ambiguous
+-- overload otherwise.
+drop function if exists public.consume_item_fefo(uuid, uuid, numeric, text, uuid, date);
+create or replace function public.consume_item_fefo(
   p_company_id uuid,
   p_item_id uuid,
   p_quantity numeric,
   p_reference_type text,
   p_reference_id uuid,
-  p_movement_date date
+  p_movement_date date,
+  p_warehouse_id uuid default null,
+  p_to_warehouse_id uuid default null
 )
 returns numeric
 language plpgsql
@@ -749,7 +764,11 @@ declare
   v_remaining numeric := p_quantity;
   v_take numeric;
   v_total_cost numeric := 0;
+  v_warehouse_id uuid;
+  v_dest_batch_id uuid;
 begin
+  v_warehouse_id := coalesce(p_warehouse_id, public.current_user_default_warehouse_id());
+
   select item_type, average_cost into v_item from public.items where id = p_item_id;
 
   if v_item.item_type = 'raw_material' and v_item.average_cost is null then
@@ -757,11 +776,11 @@ begin
   end if;
 
   for v_batch in
-    select ib.id, ib.unit_cost,
+    select ib.id, ib.unit_cost, ib.expiry_date,
       coalesce(sum(case when sl.direction = 'in' then sl.quantity else -sl.quantity end), 0) as remaining_qty
     from public.item_batches ib
     left join public.stock_ledger sl on sl.batch_id = ib.id
-    where ib.item_id = p_item_id and ib.company_id = p_company_id
+    where ib.item_id = p_item_id and ib.company_id = p_company_id and ib.warehouse_id = v_warehouse_id
     group by ib.id, ib.unit_cost, ib.expiry_date
     having coalesce(sum(case when sl.direction = 'in' then sl.quantity else -sl.quantity end), 0) > 0
     order by ib.expiry_date asc nulls last, ib.created_at asc
@@ -769,8 +788,21 @@ begin
     exit when v_remaining <= 0;
     v_take := least(v_remaining, v_batch.remaining_qty);
 
-    insert into public.stock_ledger (company_id, item_id, batch_id, reference_type, reference_id, quantity, direction, movement_date)
-    values (p_company_id, p_item_id, v_batch.id, p_reference_type, p_reference_id, v_take, 'out', p_movement_date);
+    insert into public.stock_ledger (company_id, item_id, batch_id, warehouse_id, reference_type, reference_id, quantity, direction, movement_date)
+    values (p_company_id, p_item_id, v_batch.id, v_warehouse_id, p_reference_type, p_reference_id, v_take, 'out', p_movement_date);
+
+    -- Mirrors this exact slice into the destination warehouse when this
+    -- is a transfer (p_to_warehouse_id given) — same expiry_date/
+    -- unit_cost, so FEFO ordering and costing stay correct at the new
+    -- location. Never runs for ordinary consumption.
+    if p_to_warehouse_id is not null then
+      insert into public.item_batches (company_id, item_id, warehouse_id, expiry_date, unit_cost)
+      values (p_company_id, p_item_id, p_to_warehouse_id, v_batch.expiry_date, v_batch.unit_cost)
+      returning id into v_dest_batch_id;
+
+      insert into public.stock_ledger (company_id, item_id, batch_id, warehouse_id, reference_type, reference_id, quantity, direction, movement_date)
+      values (p_company_id, p_item_id, v_dest_batch_id, p_to_warehouse_id, p_reference_type, p_reference_id, v_take, 'in', p_movement_date);
+    end if;
 
     v_total_cost := v_total_cost + v_take * coalesce(
       case when v_item.item_type = 'raw_material' then v_item.average_cost else v_batch.unit_cost end,
@@ -780,7 +812,7 @@ begin
   end loop;
 
   if v_remaining > 0 then
-    raise exception 'Insufficient produced/purchased batch stock for item % (% short).', p_item_id, v_remaining;
+    raise exception 'Insufficient produced/purchased batch stock for item % at that warehouse (% short).', p_item_id, v_remaining;
   end if;
 
   return round(v_total_cost, 2);
@@ -809,7 +841,8 @@ create function public._post_invoice_core(
   p_invoice_date date,
   p_revenue_expense_account_id uuid,
   p_line_items jsonb,
-  p_custom_order_id uuid default null
+  p_custom_order_id uuid default null,
+  p_discount_pct numeric default 0
 )
 returns public.invoices
 language plpgsql
@@ -838,6 +871,8 @@ declare
   v_tax_rate numeric;
   v_split record;
   v_taxable numeric(14, 2);
+  v_line_gross numeric(14, 2);
+  v_discount_amount numeric(14, 2) := 0;
   v_line_cgst numeric(14, 2);
   v_line_sgst numeric(14, 2);
   v_line_igst numeric(14, 2);
@@ -861,6 +896,16 @@ declare
 begin
   if p_type not in ('sales', 'purchase') then
     raise exception 'Invalid invoice type: %', p_type;
+  end if;
+  if p_discount_pct < 0 or p_discount_pct > 100 then
+    raise exception 'Discount percent must be between 0 and 100.';
+  end if;
+  -- Phase 49: a purchase-side "discount" isn't the same concept (that
+  -- would be a vendor-negotiated price reduction, not something this
+  -- company grants) and nothing in this app models it — reject rather
+  -- than silently ignore a caller's mistake.
+  if p_discount_pct > 0 and p_type <> 'sales' then
+    raise exception 'Discounts are only supported on sales invoices.';
   end if;
 
   perform public.reject_if_period_closed(v_company_id, p_invoice_date);
@@ -950,7 +995,15 @@ begin
       raise exception 'No tax rate found for HSN/SAC % as of %.', v_item.hsn_sac_code, p_invoice_date;
     end if;
 
-    v_taxable := round((v_line->>'quantity')::numeric * (v_line->>'rate')::numeric, 2);
+    -- Phase 49: discount applied per line, before GST — so a purchase
+    -- line (where p_discount_pct is always 0, enforced above) is
+    -- byte-for-byte unchanged, and every downstream figure (v_subtotal,
+    -- v_grand, the revenue journal leg) already reflects the discounted
+    -- amount automatically, with no other change needed anywhere else
+    -- in this function.
+    v_line_gross := round((v_line->>'quantity')::numeric * (v_line->>'rate')::numeric, 2);
+    v_taxable := round(v_line_gross * (1 - p_discount_pct / 100), 2);
+    v_discount_amount := v_discount_amount + (v_line_gross - v_taxable);
 
     select * into v_split from public.calculate_gst_split(v_seller_state_code, v_buyer_state_code, v_taxable, v_tax_rate);
     v_line_cgst := v_split.cgst;
@@ -1017,7 +1070,8 @@ begin
   v_grand := v_subtotal + v_cgst + v_sgst + v_igst;
 
   update public.invoices
-    set subtotal = v_subtotal, cgst_total = v_cgst, sgst_total = v_sgst, igst_total = v_igst, grand_total = v_grand
+    set subtotal = v_subtotal, cgst_total = v_cgst, sgst_total = v_sgst, igst_total = v_igst, grand_total = v_grand,
+        discount_pct = p_discount_pct, discount_amount = v_discount_amount
     where id = v_invoice.id
     returning * into v_invoice;
 
@@ -1085,7 +1139,8 @@ create or replace function public.post_invoice(
   p_invoice_date date,
   p_revenue_expense_account_id uuid,
   p_line_items jsonb,
-  p_custom_order_id uuid default null
+  p_custom_order_id uuid default null,
+  p_discount_pct numeric default 0
 )
 returns public.invoices
 language plpgsql
@@ -1098,16 +1153,17 @@ begin
   -- security definer bypasses RLS, so re-check everything RLS would have
   -- checked — same discipline bootstrap_company() already follows.
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to post invoices.';
   end if;
   return public._post_invoice_core(
-    v_company_id, p_type, p_party_id, p_invoice_date, p_revenue_expense_account_id, p_line_items, p_custom_order_id
+    v_company_id, p_type, p_party_id, p_invoice_date, p_revenue_expense_account_id, p_line_items, p_custom_order_id,
+    p_discount_pct
   );
 end;
 $$;
 
-grant execute on function public.post_invoice(text, uuid, date, uuid, jsonb, uuid) to authenticated;
+grant execute on function public.post_invoice(text, uuid, date, uuid, jsonb, uuid, numeric) to authenticated;
 
 -- credit_notes — the correction document cancel_invoice() always issues.
 -- Full-value only (matches cancel_invoice's all-or-nothing semantics; a
@@ -1181,7 +1237,7 @@ declare
   v_new_avg numeric;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to cancel invoices.';
   end if;
   perform public.reject_if_period_closed(v_company_id, current_date);
@@ -1246,12 +1302,12 @@ begin
   end loop;
 
   for v_leg in
-    select item_id, batch_id, quantity, direction from public.stock_ledger
+    select item_id, batch_id, warehouse_id, quantity, direction from public.stock_ledger
     where reference_type = 'invoice' and reference_id = v_invoice.id
   loop
-    insert into public.stock_ledger (company_id, item_id, batch_id, reference_type, reference_id, quantity, direction, movement_date)
+    insert into public.stock_ledger (company_id, item_id, batch_id, warehouse_id, reference_type, reference_id, quantity, direction, movement_date)
     values (
-      v_company_id, v_leg.item_id, v_leg.batch_id, 'invoice', v_invoice.id, v_leg.quantity,
+      v_company_id, v_leg.item_id, v_leg.batch_id, v_leg.warehouse_id, 'invoice', v_invoice.id, v_leg.quantity,
       case when v_leg.direction = 'in' then 'out' else 'in' end,
       current_date
     );
@@ -1278,6 +1334,14 @@ begin
   );
 
   update public.invoices set status = 'cancelled' where id = v_invoice.id returning * into v_invoice;
+
+  -- Phase 48: a project/consulting invoice (Phase 31/44) links its
+  -- billed timesheets via timesheets.invoice_id, set at posting time by
+  -- _post_project_invoice_core(). Cancelling it must free those
+  -- timesheets to be invoiced again — otherwise they'd stay permanently
+  -- stuck pointing at a cancelled invoice. Harmless no-op for every
+  -- other invoice: only project invoicing ever sets this column.
+  update public.timesheets set invoice_id = null where invoice_id = v_invoice.id;
 
   return v_invoice;
 end;
@@ -1380,7 +1444,14 @@ create policy rnd_trial_consumptions_select on public.rnd_trial_consumptions
 -- journal entry (finished_goods_inventory debit, raw_material_inventory
 -- credit) — no P&L impact here; that happens later, when the finished
 -- good is actually sold (see post_invoice's COGS leg).
-create or replace function public.post_production_entry(
+-- Trusted internal helper — no authorization check, same reasoning as
+-- every other _xxx_core() function in this schema (Phases 40-51).
+-- post_production_entry() below is the direct-call entry point and
+-- checks admin/accountant itself; submit_production_entry()/
+-- approve_request() (Phase 52) call this directly instead, since
+-- authority was already verified by the time either reaches it.
+create function public._post_production_entry_core(
+  p_company_id uuid,
   p_finished_good_item_id uuid,
   p_quantity_produced numeric,
   p_production_date date,
@@ -1394,7 +1465,7 @@ security definer
 set search_path = public
 as $$
 declare
-  v_company_id uuid;
+  v_company_id uuid := p_company_id;
   v_fg_item record;
   v_entry public.production_entries;
   v_entry_group uuid := gen_random_uuid();
@@ -1406,11 +1477,6 @@ declare
   v_fg_inventory_account_id uuid;
   v_rm_inventory_account_id uuid;
 begin
-  v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
-    raise exception 'Not authorized to record production.';
-  end if;
-
   if p_quantity_produced <= 0 then
     raise exception 'Quantity produced must be positive.';
   end if;
@@ -1483,6 +1549,33 @@ begin
 end;
 $$;
 
+create function public.post_production_entry(
+  p_finished_good_item_id uuid,
+  p_quantity_produced numeric,
+  p_production_date date,
+  p_expiry_date date,
+  p_consumptions jsonb,
+  p_custom_order_id uuid default null
+)
+returns public.production_entries
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
+    raise exception 'Not authorized to record production.';
+  end if;
+  return public._post_production_entry_core(
+    v_company_id, p_finished_good_item_id, p_quantity_produced, p_production_date, p_expiry_date,
+    p_consumptions, p_custom_order_id
+  );
+end;
+$$;
+
 grant execute on function public.post_production_entry(uuid, numeric, date, date, jsonb, uuid) to authenticated;
 
 -- Records an R&D recipe trial: consumes raw materials FEFO exactly like
@@ -1519,7 +1612,7 @@ declare
   v_rm_inventory_account_id uuid;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to record an R&D trial.';
   end if;
 
@@ -1614,17 +1707,17 @@ create policy custom_orders_select on public.custom_orders
 create policy custom_orders_write on public.custom_orders
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy custom_orders_update on public.custom_orders
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy custom_orders_delete on public.custom_orders
   for delete using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- Nullable tag on the two documents a bespoke order actually flows
@@ -1728,17 +1821,17 @@ create policy bank_transactions_select on public.bank_transactions
 create policy bank_transactions_write on public.bank_transactions
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy bank_transactions_update on public.bank_transactions
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy bank_transactions_delete on public.bank_transactions
   for delete using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- Atomically posts a payment: validates the caller, the invoice, and the
@@ -1784,7 +1877,7 @@ declare
   v_tds_payable_account_id uuid;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to record payments.';
   end if;
   perform public.reject_if_period_closed(v_company_id, p_payment_date);
@@ -1891,7 +1984,7 @@ declare
   v_leg record;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to cancel payments.';
   end if;
   perform public.reject_if_period_closed(v_company_id, current_date);
@@ -2140,17 +2233,17 @@ create policy employees_select on public.employees
 create policy employees_write on public.employees
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy employees_update on public.employees
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy employees_delete on public.employees
   for delete using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- payroll_runs — one row per employee per month. Immutable once posted,
@@ -2178,12 +2271,22 @@ create table public.payroll_runs (
   salary_expense_account_id uuid not null references public.chart_of_accounts (id),
   entry_group_id uuid not null,
   created_at timestamptz not null default now(),
-  constraint payroll_runs_one_per_employee_month unique (company_id, employee_id, run_month),
+  -- Phase 48: reverse_payroll_run() sets this to 'reversed' rather than
+  -- deleting/editing the row — same immutable-original pattern
+  -- cancel_invoice() established. The old plain unique constraint on
+  -- (company_id, employee_id, run_month) is replaced by a partial index
+  -- below scoped to status='posted', so a corrected re-run is possible
+  -- for the same employee+month after a reversal.
+  status text not null default 'posted' check (status in ('posted', 'reversed')),
   constraint payroll_runs_totals_consistent
     check (total_deductions = pf_deduction + esi_deduction + professional_tax_deduction + other_deductions),
   constraint payroll_runs_net_pay_consistent check (net_pay = gross_salary - total_deductions),
   constraint payroll_runs_net_pay_not_negative check (net_pay >= 0)
 );
+
+create unique index payroll_runs_one_active_per_employee_month
+  on public.payroll_runs (company_id, employee_id, run_month)
+  where status = 'posted';
 
 alter table public.payroll_runs enable row level security;
 
@@ -2275,9 +2378,13 @@ begin
     raise exception 'Deductions (%) exceed gross salary (%).', v_total_deductions, p_gross_salary;
   end if;
 
+  -- Phase 48: scoped to status='posted', matching the partial unique
+  -- index below — otherwise a reversed run would permanently block any
+  -- corrected re-run for that employee+month, defeating the whole point
+  -- of reverse_payroll_run().
   if exists (
     select 1 from public.payroll_runs
-    where employee_id = p_employee_id and run_month = v_run_month
+    where employee_id = p_employee_id and run_month = v_run_month and status = 'posted'
   ) then
     raise exception 'Payroll has already been run for this employee for %.', to_char(v_run_month, 'Mon YYYY');
   end if;
@@ -2327,7 +2434,7 @@ declare
   v_company_id uuid;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to run payroll.';
   end if;
   return public._post_payroll_run_core(
@@ -2362,7 +2469,7 @@ create policy gst_notification_log_select on public.gst_notification_log
 
 -- Only marking a row reviewed is a client-side write; admins only.
 create policy gst_notification_log_update on public.gst_notification_log
-  for update using (public.current_user_role() = 'admin');
+  for update using (public.current_user_is_admin());
 
 -- ============================================================
 -- Phase 12: Subscriptions
@@ -2386,17 +2493,17 @@ create policy subscriptions_select on public.subscriptions
 create policy subscriptions_write on public.subscriptions
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy subscriptions_update on public.subscriptions
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy subscriptions_delete on public.subscriptions
   for delete using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- subscription_cycles — one row per billing cycle. Each cycle's items are
@@ -2436,7 +2543,7 @@ create policy subscription_cycles_write on public.subscription_cycles
     and exists (
       select 1 from public.subscriptions s
       where s.id = subscription_cycles.subscription_id and s.company_id = public.current_user_company_id()
-        and public.current_user_role() in ('admin', 'accountant')
+        and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
     )
   );
 -- WITH CHECK keeps the client from ever setting status='finalized' or an
@@ -2448,7 +2555,7 @@ create policy subscription_cycles_update on public.subscription_cycles
     and exists (
       select 1 from public.subscriptions s
       where s.id = subscription_cycles.subscription_id and s.company_id = public.current_user_company_id()
-        and public.current_user_role() in ('admin', 'accountant')
+        and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
     )
   )
   with check (status in ('draft', 'skipped') and invoice_id is null);
@@ -2458,7 +2565,7 @@ create policy subscription_cycles_delete on public.subscription_cycles
     and exists (
       select 1 from public.subscriptions s
       where s.id = subscription_cycles.subscription_id and s.company_id = public.current_user_company_id()
-        and public.current_user_role() in ('admin', 'accountant')
+        and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
     )
   );
 
@@ -2491,7 +2598,7 @@ create policy subscription_cycle_items_write on public.subscription_cycle_items
       join public.subscriptions s on s.id = sc.subscription_id
       where sc.id = subscription_cycle_items.subscription_cycle_id and sc.status = 'draft'
         and s.company_id = public.current_user_company_id()
-        and public.current_user_role() in ('admin', 'accountant')
+        and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
     )
   );
 create policy subscription_cycle_items_update on public.subscription_cycle_items
@@ -2501,7 +2608,7 @@ create policy subscription_cycle_items_update on public.subscription_cycle_items
       join public.subscriptions s on s.id = sc.subscription_id
       where sc.id = subscription_cycle_items.subscription_cycle_id and sc.status = 'draft'
         and s.company_id = public.current_user_company_id()
-        and public.current_user_role() in ('admin', 'accountant')
+        and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
     )
   );
 create policy subscription_cycle_items_delete on public.subscription_cycle_items
@@ -2511,7 +2618,7 @@ create policy subscription_cycle_items_delete on public.subscription_cycle_items
       join public.subscriptions s on s.id = sc.subscription_id
       where sc.id = subscription_cycle_items.subscription_cycle_id and sc.status = 'draft'
         and s.company_id = public.current_user_company_id()
-        and public.current_user_role() in ('admin', 'accountant')
+        and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
     )
   );
 
@@ -2539,7 +2646,7 @@ declare
   v_invoice public.invoices;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to finalize subscription cycles.';
   end if;
 
@@ -2718,7 +2825,7 @@ alter table public.audit_log enable row level security;
 -- users table's own "admin sees everyone, others see only themselves" rule.
 create policy audit_log_select on public.audit_log
   for select using (
-    public.current_user_role() = 'admin'
+    public.current_user_is_admin()
     and (company_id = public.current_user_company_id() or company_id is null)
   );
 
@@ -2905,12 +3012,12 @@ create policy branches_select on public.branches
 create policy branches_write on public.branches
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy branches_update on public.branches
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- One-time backfill: every company that existed before this migration gets
@@ -3074,7 +3181,7 @@ declare
   v_line_total numeric(14, 2);
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to create quotes.';
   end if;
 
@@ -3180,7 +3287,7 @@ declare
   v_quote public.quotes;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to update quotes.';
   end if;
 
@@ -3224,7 +3331,7 @@ declare
   v_invoice public.invoices;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to convert quotes.';
   end if;
 
@@ -3334,7 +3441,7 @@ declare
   v_advance public.customer_advances;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to record advances.';
   end if;
   perform public.reject_if_period_closed(v_company_id, p_advance_date);
@@ -3408,7 +3515,7 @@ declare
   v_entry_group uuid := gen_random_uuid();
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to apply advances.';
   end if;
   perform public.reject_if_period_closed(v_company_id, current_date);
@@ -3483,7 +3590,7 @@ declare
   v_entry_group uuid := gen_random_uuid();
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to refund advances.';
   end if;
   perform public.reject_if_period_closed(v_company_id, current_date);
@@ -3562,12 +3669,12 @@ create policy accounting_periods_select on public.accounting_periods
 create policy accounting_periods_write on public.accounting_periods
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() = 'admin'
+    and public.current_user_is_admin()
   );
 create policy accounting_periods_update on public.accounting_periods
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() = 'admin'
+    and public.current_user_is_admin()
   );
 
 -- Shared guard called from every posting/reversal function below — blocks
@@ -3694,17 +3801,17 @@ create policy units_select on public.units
 create policy units_write on public.units
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy units_update on public.units
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy units_delete on public.units
   for delete using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- 1 from_unit = factor * to_unit (e.g. 1 kg = 1000 * 1 g).
@@ -3728,17 +3835,17 @@ create policy unit_conversions_select on public.unit_conversions
 create policy unit_conversions_write on public.unit_conversions
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy unit_conversions_update on public.unit_conversions
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy unit_conversions_delete on public.unit_conversions
   for delete using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- items keeps its existing `unit` text column as-is; unit_id is additive,
@@ -3771,12 +3878,12 @@ create policy warehouses_select on public.warehouses
 create policy warehouses_write on public.warehouses
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy warehouses_update on public.warehouses
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- Backfill: give every existing branch its own default warehouse, same
@@ -3798,6 +3905,129 @@ end $$;
 -- names these columns, so every current posting path is unaffected.
 alter table public.stock_ledger add column warehouse_id uuid references public.warehouses (id);
 alter table public.item_batches add column warehouse_id uuid references public.warehouses (id);
+
+-- ============================================================
+-- Phase 56 — Warehouse-scoping foundation for stock
+-- Turns warehouse_id above from a decorative, never-populated column into
+-- a real invariant, as the first step toward inter-branch stock transfer
+-- approval (Phase 57) — a transfer can't validate "does this warehouse
+-- actually have this much stock" while nothing tracks per-warehouse
+-- balances. No user-visible behavior change in this phase: every
+-- existing posting path (sales/purchase invoices, wastage, production
+-- entries, R&D trials) keeps working exactly as before, just now
+-- explicitly tagged with a warehouse instead of implicitly untagged.
+-- ============================================================
+
+-- Mirrors current_user_default_branch_id() exactly, one level deeper —
+-- resolves the caller's default branch's default warehouse. Used both as
+-- a column DEFAULT below (so no existing insert statement needs to name
+-- warehouse_id) and directly inside consume_item_fefo() when no explicit
+-- warehouse is passed in.
+create function public.current_user_default_warehouse_id()
+returns uuid
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select w.id
+  from public.warehouses w
+  where w.branch_id = public.current_user_default_branch_id() and w.is_default
+  limit 1;
+$$;
+
+-- Same technique Phase 20 used for branch_id: a column DEFAULT means
+-- every existing insert into stock_ledger/item_batches (none of which
+-- name warehouse_id in their column list) picks up a correct value
+-- automatically, with zero changes to _post_invoice_core(),
+-- _post_production_entry_core(), _post_wastage_core(), or the R&D trial
+-- poster.
+alter table public.stock_ledger alter column warehouse_id set default public.current_user_default_warehouse_id();
+alter table public.item_batches alter column warehouse_id set default public.current_user_default_warehouse_id();
+
+-- Backfill: every existing row predates this column and is null. Every
+-- company today has exactly one branch and one warehouse (both
+-- auto-backfilled, Phase 20/28), so "that company's one default
+-- warehouse" is unambiguous — this is not a guess. The immediately
+-- following `set not null` is what actually proves this backfill was
+-- complete: if any row were missed, that statement fails outright with a
+-- clear Postgres error rather than silently leaving a gap.
+do $$
+declare
+  c record;
+  v_warehouse_id uuid;
+begin
+  for c in select id from public.companies loop
+    select w.id into v_warehouse_id
+      from public.warehouses w
+      join public.branches b on b.id = w.branch_id
+      where b.company_id = c.id and b.is_default and w.is_default;
+
+    update public.stock_ledger set warehouse_id = v_warehouse_id
+      where company_id = c.id and warehouse_id is null;
+    update public.item_batches set warehouse_id = v_warehouse_id
+      where company_id = c.id and warehouse_id is null;
+  end loop;
+end $$;
+
+alter table public.stock_ledger alter column warehouse_id set not null;
+alter table public.item_batches alter column warehouse_id set not null;
+
+-- cancel_invoice()/cancel_wastage() reversals: both replay stock_ledger
+-- rows referenced by reference_type/reference_id with direction flipped.
+-- Extended in place (their full definitions are further below/above) to
+-- also copy warehouse_id forward, so a reversal always lands back at the
+-- same warehouse the original movement touched — see the two
+-- create-or-replace blocks later in this phase's section for the actual
+-- function bodies; noted here since this is the warehouse-scoping
+-- rationale they both share.
+
+-- New, additive views — item_current_stock/item_batch_status above are
+-- UNCHANGED (Inventory.jsx and Dashboard.jsx's low-stock widget both
+-- hard-depend on exactly one row per item; multiplying rows per
+-- warehouse would break both). These are new siblings for anything that
+-- needs a per-warehouse breakdown (Phase 57's transfer form, future
+-- per-warehouse reporting).
+create view public.item_current_stock_by_warehouse
+with (security_invoker = true) as
+select
+  i.id as item_id,
+  i.company_id,
+  i.name,
+  w.id as warehouse_id,
+  w.name as warehouse_name,
+  w.branch_id,
+  (case when w.is_default then i.opening_stock else 0 end) + coalesce(
+    sum(case when sl.direction = 'in' then sl.quantity else -sl.quantity end), 0
+  ) as current_stock
+from public.items i
+join public.warehouses w on w.company_id = i.company_id
+left join public.stock_ledger sl on sl.item_id = i.id and sl.warehouse_id = w.id
+where i.type = 'good'
+group by i.id, i.company_id, i.name, w.id, w.name, w.branch_id, w.is_default;
+
+create view public.item_batch_status_by_warehouse
+with (security_invoker = true) as
+select
+  ib.id as batch_id,
+  ib.item_id,
+  i.name as item_name,
+  i.item_type,
+  i.category,
+  i.company_id,
+  ib.warehouse_id,
+  w.name as warehouse_name,
+  w.branch_id,
+  ib.expiry_date,
+  ib.unit_cost,
+  coalesce(sum(case when sl.direction = 'in' then sl.quantity else -sl.quantity end), 0) as remaining_quantity
+from public.item_batches ib
+join public.items i on i.id = ib.item_id
+join public.warehouses w on w.id = ib.warehouse_id
+left join public.stock_ledger sl on sl.batch_id = ib.id
+group by ib.id, ib.item_id, i.name, i.item_type, i.category, i.company_id, ib.warehouse_id, w.name, w.branch_id,
+  ib.expiry_date, ib.unit_cost
+having coalesce(sum(case when sl.direction = 'in' then sl.quantity else -sl.quantity end), 0) > 0;
 
 -- parties.type widened to allow 'both' — a party can be billed as a
 -- customer and paid as a vendor without a full party-role-table rewrite.
@@ -3886,7 +4116,14 @@ create policy credit_note_line_items_select on public.credit_note_line_items
 -- unwinding weighted-average costing for a PARTIAL quantity (with
 -- possibly other purchases/consumption having happened since) is a
 -- meaningfully bigger, riskier problem than the financial correction here.
-create or replace function public.post_manual_credit_debit_note(
+-- Trusted internal helper — no authorization check, same reasoning as
+-- every other _xxx_core() function in this schema (Phases 40-49).
+-- post_manual_credit_debit_note() below is the direct-call entry point
+-- and checks admin/accountant itself; submit_credit_debit_note()/
+-- approve_request() (Phase 50) call this directly instead, since
+-- authority was already verified by the time either reaches it.
+create function public._post_manual_credit_debit_note_core(
+  p_company_id uuid,
   p_invoice_id uuid,
   p_reason text,
   p_line_adjustments jsonb -- [{invoice_line_item_id, quantity}, ...]
@@ -3897,7 +4134,7 @@ security definer
 set search_path = public
 as $$
 declare
-  v_company_id uuid;
+  v_company_id uuid := p_company_id;
   v_invoice public.invoices;
   v_fy text;
   v_note_type text;
@@ -3936,10 +4173,6 @@ declare
   v_subtotal_other numeric(14, 2) := 0;
   v_rm_inventory_account_id uuid;
 begin
-  v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
-    raise exception 'Not authorized to issue credit/debit notes.';
-  end if;
   perform public.reject_if_period_closed(v_company_id, current_date);
 
   select * into v_invoice from public.invoices where id = p_invoice_id and company_id = v_company_id;
@@ -4104,6 +4337,27 @@ begin
 end;
 $$;
 
+create function public.post_manual_credit_debit_note(
+  p_invoice_id uuid,
+  p_reason text,
+  p_line_adjustments jsonb
+)
+returns public.credit_notes
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
+    raise exception 'Not authorized to issue credit/debit notes.';
+  end if;
+  return public._post_manual_credit_debit_note_core(v_company_id, p_invoice_id, p_reason, p_line_adjustments);
+end;
+$$;
+
 grant execute on function public.post_manual_credit_debit_note(uuid, text, jsonb) to authenticated;
 
 -- Outstanding balance per invoice, folding in every offset a posted
@@ -4165,6 +4419,11 @@ create table public.wastage (
   wastage_date date not null,
   cost numeric(14, 2) not null default 0 check (cost >= 0),
   entry_group_id uuid not null,
+  -- Phase 48: cancel_wastage() sets this to 'cancelled' — same
+  -- immutable-original/reversing-entry pattern cancel_invoice() and
+  -- reverse_payroll_run() use, restoring the consumed stock and
+  -- reversing the journal entry rather than editing the row.
+  status text not null default 'posted' check (status in ('posted', 'cancelled')),
   created_at timestamptz not null default now()
 );
 
@@ -4263,7 +4522,7 @@ declare
   v_company_id uuid;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to record wastage.';
   end if;
   return public._post_wastage_core(v_company_id, p_item_id, p_quantity, p_reason, p_wastage_date);
@@ -4294,12 +4553,12 @@ create policy delivery_platforms_select on public.delivery_platforms
 create policy delivery_platforms_write on public.delivery_platforms
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy delivery_platforms_update on public.delivery_platforms
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- Each order already has its own sales invoice (confirmed with the user —
@@ -4390,7 +4649,7 @@ declare
   v_invoice record;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to post delivery settlements.';
   end if;
   perform public.reject_if_period_closed(v_company_id, p_settlement_date);
@@ -4516,17 +4775,17 @@ create policy projects_select on public.projects
 create policy projects_write on public.projects
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy projects_update on public.projects
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy projects_delete on public.projects
   for delete using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 create table public.project_tasks (
@@ -4551,17 +4810,17 @@ create policy project_tasks_select on public.project_tasks
 create policy project_tasks_write on public.project_tasks
   for insert with check (
     exists (select 1 from public.projects where projects.id = project_tasks.project_id and projects.company_id = public.current_user_company_id())
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy project_tasks_update on public.project_tasks
   for update using (
     exists (select 1 from public.projects where projects.id = project_tasks.project_id and projects.company_id = public.current_user_company_id())
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy project_tasks_delete on public.project_tasks
   for delete using (
     exists (select 1 from public.projects where projects.id = project_tasks.project_id and projects.company_id = public.current_user_company_id())
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- invoice_id is set once these hours are billed (post_project_invoice()
@@ -4595,17 +4854,17 @@ create policy timesheets_select on public.timesheets
 create policy timesheets_write on public.timesheets
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy timesheets_update on public.timesheets
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy timesheets_delete on public.timesheets
   for delete using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- Reporting-only cost record for project profitability — deliberately NOT
@@ -4634,17 +4893,17 @@ create policy project_expenses_select on public.project_expenses
 create policy project_expenses_write on public.project_expenses
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy project_expenses_update on public.project_expenses
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy project_expenses_delete on public.project_expenses
   for delete using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- Generates a normal sales invoice from a set of approved, billable,
@@ -4748,7 +5007,7 @@ declare
   v_company_id uuid;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to invoice projects.';
   end if;
   return public._post_project_invoice_core(
@@ -4833,11 +5092,11 @@ alter table public.tds_rates enable row level security;
 -- manually, never auto-applied).
 create policy tds_rates_select on public.tds_rates for select using (true);
 create policy tds_rates_write on public.tds_rates
-  for insert with check (public.current_user_role() = 'admin');
+  for insert with check (public.current_user_is_admin());
 create policy tds_rates_update on public.tds_rates
-  for update using (public.current_user_role() = 'admin');
+  for update using (public.current_user_is_admin());
 create policy tds_rates_delete on public.tds_rates
-  for delete using (public.current_user_role() = 'admin');
+  for delete using (public.current_user_is_admin());
 
 create function public.resolve_tds_rate(p_section text, p_as_of date)
 returns numeric
@@ -4882,7 +5141,7 @@ create policy tds_transactions_select on public.tds_transactions
 create policy tds_transactions_update on public.tds_transactions
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 -- No insert/delete policy — insert happens only via post_payment(),
 -- delete only via cancel_payment() (both SECURITY DEFINER).
@@ -4938,17 +5197,17 @@ create policy bank_accounts_select on public.bank_accounts
 create policy bank_accounts_write on public.bank_accounts
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy bank_accounts_update on public.bank_accounts
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy bank_accounts_delete on public.bank_accounts
   for delete using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- A plain RLS policy can't see across to chart_of_accounts to confirm
@@ -5004,17 +5263,17 @@ create policy asset_categories_select on public.asset_categories
 create policy asset_categories_write on public.asset_categories
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy asset_categories_update on public.asset_categories
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy asset_categories_delete on public.asset_categories
   for delete using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 create table public.fixed_assets (
@@ -5183,7 +5442,7 @@ declare
   v_company_id uuid;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to capitalize fixed assets.';
   end if;
   return public._capitalize_fixed_asset_core(
@@ -5222,7 +5481,7 @@ declare
   v_total numeric(14, 2) := 0;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to post a depreciation run.';
   end if;
   perform public.reject_if_period_closed(v_company_id, p_run_date);
@@ -5302,7 +5561,7 @@ declare
   v_entry_group uuid := gen_random_uuid();
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to dispose of fixed assets.';
   end if;
   perform public.reject_if_period_closed(v_company_id, p_disposal_date);
@@ -5418,17 +5677,17 @@ create policy departments_select on public.departments
 create policy departments_write on public.departments
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy departments_update on public.departments
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy departments_delete on public.departments
   for delete using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 create table public.designations (
@@ -5449,17 +5708,17 @@ create policy designations_select on public.designations
 create policy designations_write on public.designations
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy designations_update on public.designations
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy designations_delete on public.designations
   for delete using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- Nullable, additive — existing employees and every current payroll path
@@ -5490,17 +5749,17 @@ create policy attendance_select on public.attendance
 create policy attendance_write on public.attendance
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy attendance_update on public.attendance
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy attendance_delete on public.attendance
   for delete using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 create table public.leave (
@@ -5526,17 +5785,17 @@ create policy leave_select on public.leave
 create policy leave_write on public.leave
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy leave_update on public.leave
   for update using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy leave_delete on public.leave
   for delete using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- ============================================================
@@ -5590,12 +5849,12 @@ create policy attachments_select on public.attachments
 create policy attachments_insert on public.attachments
   for insert with check (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy attachments_delete on public.attachments
   for delete using (
     company_id = public.current_user_company_id()
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- Private bucket (public=false) — every read goes through a signed URL
@@ -5621,13 +5880,13 @@ create policy attachments_storage_insert on storage.objects
   for insert with check (
     bucket_id = 'attachments'
     and (storage.foldername(name))[1] = public.current_user_company_id()::text
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 create policy attachments_storage_delete on storage.objects
   for delete using (
     bucket_id = 'attachments'
     and (storage.foldername(name))[1] = public.current_user_company_id()::text
-    and public.current_user_role() in ('admin', 'accountant')
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
   );
 
 -- Expanded audit log: accounting_periods close/reopen now audited too,
@@ -5723,7 +5982,7 @@ $$;
 grant execute on function public.project_portfolio_summary() to authenticated;
 
 -- ============================================================
--- Role/can_manage_users management from within the app
+-- is_admin/can_manage_users management from within the app
 -- users has no client-side UPDATE policy (see the comment above
 -- users_select) — this RPC is the only way to change either field,
 -- redoing the same admin+can_manage_users authorization check RLS would
@@ -5731,9 +5990,16 @@ grant execute on function public.project_portfolio_summary() to authenticated;
 -- last admin accidentally lock themselves out of user management with no
 -- one left who can undo it) — that still has to go through the Supabase
 -- Table Editor, same as before.
+--
+-- Phase 63: renamed from update_user_role() and its p_role
+-- (admin/accountant/viewer) parameter dropped entirely — assigning a
+-- named business role (accountant, cfo, kitchen_manager, ...) is
+-- assign_user_role()'s/revoke_user_role()'s job (Roles & Permissions),
+-- not this function's. This one now only ever toggles the superuser bit
+-- and the narrower can-manage-users gate on top of it.
 -- ============================================================
 
-create function public.update_user_role(p_user_id uuid, p_role text, p_can_manage_users boolean)
+create function public.update_user_admin_status(p_user_id uuid, p_is_admin boolean, p_can_manage_users boolean)
 returns public.users
 language plpgsql
 security definer
@@ -5745,21 +6011,17 @@ declare
 begin
   v_caller_company_id := public.current_user_company_id();
   if v_caller_company_id is null
-     or public.current_user_role() <> 'admin'
+     or not public.current_user_is_admin()
      or not exists (select 1 from public.users where id = auth.uid() and can_manage_users) then
     raise exception 'Not authorized to manage users.';
   end if;
 
   if p_user_id = auth.uid() then
-    raise exception 'You cannot change your own role or permissions here — ask another admin, or use the Supabase Table Editor.';
+    raise exception 'You cannot change your own admin status here — ask another admin, or use the Supabase Table Editor.';
   end if;
 
-  if p_role not in ('admin', 'accountant', 'viewer') then
-    raise exception 'Invalid role: %', p_role;
-  end if;
-
-  if p_can_manage_users and p_role <> 'admin' then
-    raise exception 'can_manage_users only has any effect for an admin — set role to admin first.';
+  if p_can_manage_users and not p_is_admin then
+    raise exception 'can_manage_users only has any effect for an admin — set is_admin first.';
   end if;
 
   if not exists (
@@ -5769,7 +6031,7 @@ begin
   end if;
 
   update public.users
-    set role = p_role::public.user_role, can_manage_users = p_can_manage_users
+    set is_admin = p_is_admin, can_manage_users = p_can_manage_users
     where id = p_user_id
     returning * into v_updated;
 
@@ -5777,7 +6039,7 @@ begin
 end;
 $$;
 
-grant execute on function public.update_user_role(uuid, text, boolean) to authenticated;
+grant execute on function public.update_user_admin_status(uuid, boolean, boolean) to authenticated;
 
 -- ============================================================
 -- Phase 38 — Multi-Role Foundation & Permissions Matrix
@@ -5800,7 +6062,10 @@ create type public.app_role_type as enum (
 
 -- Shared helper — same admin+can_manage_users check ManageUsers.jsx
 -- already gates on, factored out since Phase 38's new RLS policies need
--- it repeatedly.
+-- it repeatedly. Phase 59: reads is_admin instead of role = 'admin' — the
+-- single change this function needed to fix all 8 of its downstream
+-- consumers (user_app_roles/role_permissions/assign_user_role/
+-- revoke_user_role/approval_rules) at once, with no edits needed there.
 create function public.current_user_can_manage_users()
 returns boolean
 language sql
@@ -5809,7 +6074,7 @@ security definer
 set search_path = public
 as $$
   select coalesce(
-    (select role = 'admin' and can_manage_users from public.users where id = auth.uid()),
+    (select is_admin and can_manage_users from public.users where id = auth.uid()),
     false
   );
 $$;
@@ -6011,7 +6276,7 @@ create policy employees_select on public.employees
   for select using (
     company_id = public.current_user_company_id()
     and (
-      public.current_user_role() <> 'viewer'
+      (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
       or not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'employee')
       or id = public.current_user_linked_employee_id()
     )
@@ -6022,7 +6287,7 @@ create policy attendance_select on public.attendance
   for select using (
     company_id = public.current_user_company_id()
     and (
-      public.current_user_role() <> 'viewer'
+      (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
       or not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'employee')
       or employee_id = public.current_user_linked_employee_id()
     )
@@ -6033,7 +6298,7 @@ create policy leave_select on public.leave
   for select using (
     company_id = public.current_user_company_id()
     and (
-      public.current_user_role() <> 'viewer'
+      (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
       or not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'employee')
       or employee_id = public.current_user_linked_employee_id()
     )
@@ -6044,7 +6309,7 @@ create policy payroll_runs_select on public.payroll_runs
   for select using (
     company_id = public.current_user_company_id()
     and (
-      public.current_user_role() <> 'viewer'
+      (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
       or not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'employee')
       or employee_id = public.current_user_linked_employee_id()
     )
@@ -6059,7 +6324,7 @@ create policy projects_select on public.projects
   for select using (
     company_id = public.current_user_company_id()
     and (
-      public.current_user_role() <> 'viewer'
+      (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
       or not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'project_manager')
       or project_manager_employee_id = public.current_user_linked_employee_id()
     )
@@ -6073,7 +6338,7 @@ create policy timesheets_select on public.timesheets
   for select using (
     company_id = public.current_user_company_id()
     and (
-      public.current_user_role() <> 'viewer'
+      (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
       or not exists (
         select 1 from public.user_app_roles
         where user_id = auth.uid() and app_role in ('employee', 'project_manager')
@@ -6190,7 +6455,7 @@ declare
   v_asset public.fixed_assets;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to capitalize fixed assets.';
   end if;
 
@@ -6234,9 +6499,249 @@ $$;
 
 grant execute on function public.submit_fixed_asset_capitalization(uuid, text, text, date, numeric, numeric, uuid) to authenticated;
 
--- Only one entity_type exists yet (fixed_asset_capitalization) — the
--- if/elsif on v_request.entity_type below is where a future phase adding
--- a second approval-gated module adds its own branch.
+-- ============================================================
+-- Result-entity tables for later phases, moved here (ahead of
+-- approve_request()) for a real reason, not stylistic: approve_request()
+-- below declares one local variable per result-entity type
+-- (v_claim public.expense_claims;, etc.), and CREATE FUNCTION eagerly
+-- resolves every declared variable's type at creation time — unlike the
+-- statements in a function's body, which Postgres only checks the first
+-- time the function actually runs. Appending each new table at the end
+-- of the file (this file's normal, otherwise-correct convention) silently
+-- broke a true top-to-bottom fresh install starting at Phase 45, and
+-- went undetected because the live database was always patched
+-- incrementally instead (each phase's handoff file happened to create
+-- its table before touching approve_request(), so the live sequence was
+-- always fine even though this file's own sequence wasn't). Caught
+-- properly during Phase 51's live-testing, when purchase_orders was the
+-- first such table whose handoff file's own internal order also
+-- happened to be wrong, and Postgres's exact error — a type not existing
+-- yet at CREATE FUNCTION time — made the underlying, pre-existing
+-- ordering bug impossible to miss. Fixed for all three affected tables
+-- at once, not just the one that happened to surface it. Each table's
+-- full design rationale stays as a comment at its ORIGINAL (Phase 45/46/
+-- 51) position below, right where its supporting functions live; only
+-- the bare CREATE TABLE/RLS statements moved.
+-- ============================================================
+
+-- expense_claims (Phase 45) — see its full rationale further below,
+-- where _post_expense_claim_core()/post_expense_claim()/
+-- submit_expense_claim() are defined.
+create table public.expense_claims (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  employee_id uuid not null references public.employees (id),
+  claim_date date not null,
+  description text not null,
+  category text,
+  amount numeric(14, 2) not null check (amount > 0),
+  expense_account_id uuid not null references public.chart_of_accounts (id),
+  bank_account_id uuid not null references public.chart_of_accounts (id),
+  entry_group_id uuid not null,
+  created_at timestamptz not null default now(),
+  status text not null default 'posted' check (status in ('posted', 'cancelled'))
+);
+
+alter table public.expense_claims enable row level security;
+
+create policy expense_claims_select on public.expense_claims
+  for select using (
+    company_id = public.current_user_company_id()
+    and (
+      (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
+      or not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'employee')
+      or employee_id = public.current_user_linked_employee_id()
+    )
+  );
+
+-- access_grants (Phase 46) — see its full rationale further below,
+-- where _grant_access_core()/grant_access()/submit_access_request()/
+-- revoke_access() are defined.
+create table public.access_grants (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  employee_id uuid not null references public.employees (id),
+  system_name text not null,
+  access_level text not null,
+  reason text,
+  status text not null default 'active' check (status in ('active', 'revoked')),
+  granted_at timestamptz not null default now(),
+  revoked_at timestamptz,
+  revoked_by uuid references public.users (id),
+  created_at timestamptz not null default now(),
+  constraint access_grants_revoked_consistency
+    check ((status = 'revoked') = (revoked_at is not null))
+);
+
+alter table public.access_grants enable row level security;
+
+create policy access_grants_select on public.access_grants
+  for select using (
+    company_id = public.current_user_company_id()
+    and (
+      (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
+      or not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'employee')
+      or employee_id = public.current_user_linked_employee_id()
+    )
+  );
+
+-- purchase_requests/purchase_orders (Phase 51) — see their full
+-- rationale further below, where _create_purchase_request_core()/
+-- create_purchase_request()/submit_purchase_request()/
+-- cancel_purchase_order() are defined.
+create table public.purchase_requests (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  requested_by uuid not null references public.users (id),
+  item_id uuid not null references public.items (id),
+  quantity numeric(14, 2) not null check (quantity > 0),
+  estimated_amount numeric(14, 2) not null check (estimated_amount >= 0),
+  vendor_party_id uuid references public.parties (id),
+  notes text,
+  created_at timestamptz not null default now()
+);
+
+alter table public.purchase_requests enable row level security;
+
+create policy purchase_requests_select on public.purchase_requests
+  for select using (company_id = public.current_user_company_id());
+
+create table public.purchase_orders (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  purchase_request_id uuid not null references public.purchase_requests (id),
+  item_id uuid not null references public.items (id),
+  quantity numeric(14, 2) not null check (quantity > 0),
+  vendor_party_id uuid references public.parties (id),
+  status text not null default 'open' check (status in ('open', 'fulfilled', 'cancelled')),
+  created_at timestamptz not null default now()
+);
+
+alter table public.purchase_orders enable row level security;
+
+create policy purchase_orders_select on public.purchase_orders
+  for select using (company_id = public.current_user_company_id());
+
+-- bank_reconciliations (Phase 53) — see its full rationale further
+-- below, where create_bank_reconciliation()/submit_bank_reconciliation()
+-- are defined. Applying the Phase 51 lesson proactively this time,
+-- rather than discovering it via a failed handoff file: this table
+-- moves here (ahead of approve_request()) up front, since that
+-- function's declare block needs the type to already exist.
+create table public.bank_reconciliations (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  bank_account_id uuid not null references public.bank_accounts (id),
+  period_start date not null,
+  period_end date not null,
+  opening_balance numeric(14, 2) not null,
+  closing_balance numeric(14, 2) not null,
+  reconciled_total numeric(14, 2) not null default 0,
+  status text not null default 'draft' check (status in ('draft', 'pending', 'approved', 'rejected')),
+  prepared_by uuid not null references public.users (id),
+  created_at timestamptz not null default now(),
+  approved_at timestamptz,
+  constraint bank_reconciliations_valid_period check (period_end >= period_start)
+);
+
+alter table public.bank_reconciliations enable row level security;
+
+create policy bank_reconciliations_select on public.bank_reconciliations
+  for select using (company_id = public.current_user_company_id());
+
+-- gst_returns/tds_returns (Phase 54) — see their full rationale further
+-- below, where create_gst_return()/submit_gst_return()/
+-- create_tds_return()/submit_tds_return() are defined. Applying the
+-- Phase 51 lesson proactively, same as Phase 53: moved here (ahead of
+-- approve_request()) up front, since that function's declare block
+-- needs both types to already exist.
+create table public.gst_returns (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  period_start date not null,
+  period_end date not null,
+  outward_taxable_value numeric(14, 2) not null default 0,
+  outward_cgst numeric(14, 2) not null default 0,
+  outward_sgst numeric(14, 2) not null default 0,
+  outward_igst numeric(14, 2) not null default 0,
+  inward_taxable_value numeric(14, 2) not null default 0,
+  inward_cgst numeric(14, 2) not null default 0,
+  inward_sgst numeric(14, 2) not null default 0,
+  inward_igst numeric(14, 2) not null default 0,
+  status text not null default 'draft' check (status in ('draft', 'pending', 'approved', 'rejected')),
+  prepared_by uuid not null references public.users (id),
+  created_at timestamptz not null default now(),
+  approved_at timestamptz,
+  constraint gst_returns_valid_period check (period_end >= period_start)
+);
+
+alter table public.gst_returns enable row level security;
+
+create policy gst_returns_select on public.gst_returns
+  for select using (company_id = public.current_user_company_id());
+
+-- A rejected return doesn't block a fresh attempt at the same period —
+-- only one draft/pending/approved return may exist per exact period.
+create unique index gst_returns_one_active_per_period
+  on public.gst_returns (company_id, period_start, period_end)
+  where status in ('draft', 'pending', 'approved');
+
+create table public.tds_returns (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  period_start date not null,
+  period_end date not null,
+  total_tds_amount numeric(14, 2) not null default 0,
+  status text not null default 'draft' check (status in ('draft', 'pending', 'approved', 'rejected')),
+  prepared_by uuid not null references public.users (id),
+  created_at timestamptz not null default now(),
+  approved_at timestamptz,
+  constraint tds_returns_valid_period check (period_end >= period_start)
+);
+
+alter table public.tds_returns enable row level security;
+
+create policy tds_returns_select on public.tds_returns
+  for select using (company_id = public.current_user_company_id());
+
+create unique index tds_returns_one_active_per_period
+  on public.tds_returns (company_id, period_start, period_end)
+  where status in ('draft', 'pending', 'approved');
+
+-- stock_transfers (Phase 57) — see its full rationale further below,
+-- where _post_stock_transfer_core()/submit_stock_transfer()/
+-- cancel_stock_transfer() are defined. Applying the Phase 51 lesson
+-- proactively, same as Phases 53/54: moved here (ahead of
+-- approve_request()) up front, since that function's declare block
+-- needs the type to already exist. Unlike bank_reconciliations/
+-- gst_returns/tds_returns, this is a "posted by default, cancellable"
+-- result entity (same shape as wastage/production_entries) — the row is
+-- only ever created by _post_stock_transfer_core() at FINAL approval,
+-- never in a draft/pending state of its own. No entry_group_id: moving
+-- stock between a company's own warehouses changes location, not value,
+-- so no journal_entries are ever posted against it — the reversal
+-- (cancel_stock_transfer()) replays stock_ledger purely by
+-- reference_type/reference_id, so there's nothing for an entry_group_id
+-- to usefully point at here.
+create table public.stock_transfers (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  item_id uuid not null references public.items (id),
+  quantity numeric(14, 2) not null check (quantity > 0),
+  from_warehouse_id uuid not null references public.warehouses (id),
+  to_warehouse_id uuid not null references public.warehouses (id),
+  transfer_date date not null,
+  requested_by uuid not null references public.users (id),
+  status text not null default 'posted' check (status in ('posted', 'cancelled')),
+  created_at timestamptz not null default now(),
+  constraint stock_transfers_different_warehouses check (from_warehouse_id <> to_warehouse_id)
+);
+
+alter table public.stock_transfers enable row level security;
+
+create policy stock_transfers_select on public.stock_transfers
+  for select using (company_id = public.current_user_company_id());
+
 create or replace function public.approve_request(p_request_id uuid, p_comment text default null)
 returns public.approval_requests
 language plpgsql
@@ -6253,6 +6758,13 @@ declare
   v_wastage public.wastage;
   v_claim public.expense_claims;
   v_grant public.access_grants;
+  v_note public.credit_notes;
+  v_order public.purchase_orders;
+  v_production public.production_entries;
+  v_bank_recon public.bank_reconciliations;
+  v_gst_return public.gst_returns;
+  v_tds_return public.tds_returns;
+  v_transfer public.stock_transfers;
 begin
   v_company_id := public.current_user_company_id();
   if v_company_id is null then
@@ -6266,6 +6778,12 @@ begin
   end if;
   if v_request.status <> 'pending' then
     raise exception 'This request is % and cannot be approved.', v_request.status;
+  end if;
+  -- Phase 47: separation of duties. The person who submitted a request
+  -- can never also approve it, even if they separately hold the
+  -- required approval role.
+  if v_request.requested_by = auth.uid() then
+    raise exception 'You cannot approve your own request.';
   end if;
 
   v_required_role := v_request.approval_chain ->> v_request.current_step;
@@ -6344,8 +6862,70 @@ begin
         v_request.payload -> 'p_line_items',
         (v_request.payload ->> 'p_custom_order_id')::uuid
       );
+      -- Phase 51: close the loop from an open purchase_orders row, if
+      -- this invoice was raised to fulfill one.
+      if (v_request.payload ->> 'p_purchase_order_id') is not null then
+        update public.purchase_orders set status = 'fulfilled'
+          where id = (v_request.payload ->> 'p_purchase_order_id')::uuid;
+      end if;
       update public.approval_requests
         set status = 'approved', result_entity_id = v_invoice.id, updated_at = now()
+        where id = p_request_id
+        returning * into v_request;
+    elsif v_request.entity_type = 'purchase_request' then
+      -- Same reasoning as the branches above —
+      -- _create_purchase_request_core(), not create_purchase_request(),
+      -- since authority was already verified against the approval
+      -- chain, not the final approver's own users.role.
+      v_order := public._create_purchase_request_core(
+        v_company_id,
+        v_request.requested_by,
+        (v_request.payload ->> 'p_item_id')::uuid,
+        (v_request.payload ->> 'p_quantity')::numeric,
+        (v_request.payload ->> 'p_estimated_amount')::numeric,
+        (v_request.payload ->> 'p_vendor_party_id')::uuid,
+        v_request.payload ->> 'p_notes'
+      );
+      update public.approval_requests
+        set status = 'approved', result_entity_id = v_order.id, updated_at = now()
+        where id = p_request_id
+        returning * into v_request;
+    elsif v_request.entity_type = 'production_entry' then
+      -- Same reasoning as the branches above — _post_production_entry_core(),
+      -- not post_production_entry(), since authority was already verified
+      -- against the approval chain, not the final approver's own
+      -- users.role. Note approval_requests.amount here holds QUANTITY
+      -- PRODUCED, not cost — same reasoning as wastage's submit_wastage():
+      -- cost is only known once consume_item_fefo() actually runs inside
+      -- the core, so it can't be previewed before consuming stock.
+      v_production := public._post_production_entry_core(
+        v_company_id,
+        (v_request.payload ->> 'p_finished_good_item_id')::uuid,
+        (v_request.payload ->> 'p_quantity_produced')::numeric,
+        (v_request.payload ->> 'p_production_date')::date,
+        (v_request.payload ->> 'p_expiry_date')::date,
+        v_request.payload -> 'p_consumptions',
+        (v_request.payload ->> 'p_custom_order_id')::uuid
+      );
+      update public.approval_requests
+        set status = 'approved', result_entity_id = v_production.id, updated_at = now()
+        where id = p_request_id
+        returning * into v_request;
+    elsif v_request.entity_type = 'bank_reconciliation' then
+      -- Same reasoning as the branches above —
+      -- _finalize_bank_reconciliation_core(), since authority was already
+      -- verified against the approval chain, not the final approver's
+      -- own users.role. Unlike every other branch, the row already
+      -- exists (in 'pending' status, set by submit_bank_reconciliation())
+      -- — the core here finalizes it rather than creating it from
+      -- scratch, since preparing a reconciliation is inherently a
+      -- multi-step, iterative matching process that can't happen
+      -- atomically inside one approval call.
+      v_bank_recon := public._finalize_bank_reconciliation_core(
+        v_company_id, (v_request.payload ->> 'p_reconciliation_id')::uuid
+      );
+      update public.approval_requests
+        set status = 'approved', result_entity_id = v_bank_recon.id, updated_at = now()
         where id = p_request_id
         returning * into v_request;
     elsif v_request.entity_type = 'wastage' then
@@ -6415,6 +6995,84 @@ begin
         set status = 'approved', result_entity_id = v_grant.id, updated_at = now()
         where id = p_request_id
         returning * into v_request;
+    elsif v_request.entity_type = 'sales_invoice_discount' then
+      -- Same reasoning as the branches above — _post_invoice_core(), not
+      -- post_invoice(), since authority was already verified against the
+      -- approval chain, not the final approver's own users.role. Always
+      -- 'sales' — this entity_type only ever represents a discounted
+      -- sales invoice submission (see submit_sales_invoice()); routine
+      -- (undiscounted or lightly-discounted) sales invoicing has no
+      -- approval gate.
+      v_invoice := public._post_invoice_core(
+        v_company_id, 'sales',
+        (v_request.payload ->> 'p_party_id')::uuid,
+        (v_request.payload ->> 'p_invoice_date')::date,
+        (v_request.payload ->> 'p_revenue_expense_account_id')::uuid,
+        v_request.payload -> 'p_line_items',
+        (v_request.payload ->> 'p_custom_order_id')::uuid,
+        (v_request.payload ->> 'p_discount_pct')::numeric
+      );
+      update public.approval_requests
+        set status = 'approved', result_entity_id = v_invoice.id, updated_at = now()
+        where id = p_request_id
+        returning * into v_request;
+    elsif v_request.entity_type = 'credit_debit_note' then
+      -- Same reasoning as the branches above —
+      -- _post_manual_credit_debit_note_core(), not
+      -- post_manual_credit_debit_note(), since authority was already
+      -- verified against the approval chain, not the final approver's
+      -- own users.role.
+      v_note := public._post_manual_credit_debit_note_core(
+        v_company_id,
+        (v_request.payload ->> 'p_invoice_id')::uuid,
+        v_request.payload ->> 'p_reason',
+        v_request.payload -> 'p_line_adjustments'
+      );
+      update public.approval_requests
+        set status = 'approved', result_entity_id = v_note.id, updated_at = now()
+        where id = p_request_id
+        returning * into v_request;
+    elsif v_request.entity_type = 'gst_return' then
+      -- Same reasoning as the branches above — _finalize_gst_return_core(),
+      -- since authority was already verified against the approval chain,
+      -- not the final approver's own users.role. Same variant as
+      -- bank_reconciliation: the row already exists (in 'pending' status,
+      -- set by submit_gst_return()) — this only finalizes it.
+      v_gst_return := public._finalize_gst_return_core(
+        v_company_id, (v_request.payload ->> 'p_gst_return_id')::uuid
+      );
+      update public.approval_requests
+        set status = 'approved', result_entity_id = v_gst_return.id, updated_at = now()
+        where id = p_request_id
+        returning * into v_request;
+    elsif v_request.entity_type = 'tds_return' then
+      -- Same reasoning as the gst_return branch above.
+      v_tds_return := public._finalize_tds_return_core(
+        v_company_id, (v_request.payload ->> 'p_tds_return_id')::uuid
+      );
+      update public.approval_requests
+        set status = 'approved', result_entity_id = v_tds_return.id, updated_at = now()
+        where id = p_request_id
+        returning * into v_request;
+    elsif v_request.entity_type = 'stock_transfer' then
+      -- Same reasoning as the branches above — _post_stock_transfer_core(),
+      -- not a public wrapper, since authority was already verified
+      -- against the approval chain, not the final approver's own
+      -- users.role. Same shape as wastage/production_entry: the row is
+      -- created here, from scratch, only on final approval.
+      v_transfer := public._post_stock_transfer_core(
+        v_company_id,
+        (v_request.payload ->> 'p_item_id')::uuid,
+        (v_request.payload ->> 'p_quantity')::numeric,
+        (v_request.payload ->> 'p_from_warehouse_id')::uuid,
+        (v_request.payload ->> 'p_to_warehouse_id')::uuid,
+        (v_request.payload ->> 'p_transfer_date')::date,
+        v_request.requested_by
+      );
+      update public.approval_requests
+        set status = 'approved', result_entity_id = v_transfer.id, updated_at = now()
+        where id = p_request_id
+        returning * into v_request;
     else
       raise exception 'Unknown entity_type: %', v_request.entity_type;
     end if;
@@ -6450,6 +7108,10 @@ begin
   if v_request.status <> 'pending' then
     raise exception 'This request is % and cannot be rejected.', v_request.status;
   end if;
+  -- Phase 47: separation of duties — same reasoning as approve_request().
+  if v_request.requested_by = auth.uid() then
+    raise exception 'You cannot reject your own request.';
+  end if;
 
   v_required_role := v_request.approval_chain ->> v_request.current_step;
   if not exists (
@@ -6468,6 +7130,34 @@ begin
         updated_at = now()
     where id = p_request_id
     returning * into v_request;
+
+  -- Phase 53: the first entity_type ever needing a rejection-specific
+  -- side effect. Every other module's rejection is a no-op beyond the
+  -- generic status flip above, since nothing was ever created for them —
+  -- but a bank reconciliation's row already exists (in 'pending' status)
+  -- by the time it's submitted, and its transactions were already
+  -- claimed. Rejecting must free those transactions (so the accountant
+  -- can correct and resubmit as a fresh reconciliation, not edit this
+  -- rejected one) and mark the reconciliation itself terminally
+  -- 'rejected' — matching this app's immutable-original convention
+  -- rather than reviving the old row.
+  if v_request.entity_type = 'bank_reconciliation' then
+    update public.bank_transactions set reconciliation_id = null
+      where reconciliation_id = (v_request.payload ->> 'p_reconciliation_id')::uuid;
+    update public.bank_reconciliations set status = 'rejected'
+      where id = (v_request.payload ->> 'p_reconciliation_id')::uuid;
+  elsif v_request.entity_type = 'gst_return' then
+    -- Phase 54: simpler than bank_reconciliation's rejection above —
+    -- nothing was ever "claimed" here (invoices/credit notes are already
+    -- immutable once posted, so there was nothing to free), just the
+    -- terminal status flip so a fresh return can be prepared for the
+    -- same period.
+    update public.gst_returns set status = 'rejected'
+      where id = (v_request.payload ->> 'p_gst_return_id')::uuid;
+  elsif v_request.entity_type = 'tds_return' then
+    update public.tds_returns set status = 'rejected'
+      where id = (v_request.payload ->> 'p_tds_return_id')::uuid;
+  end if;
 
   return v_request;
 end;
@@ -6508,7 +7198,19 @@ declare
   v_run public.payroll_runs;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null then
+    raise exception 'Not authenticated.';
+  end if;
+  -- Phase 47: current_user_has_permission()'s first real caller.
+  -- role_permissions already grants hr_payroll -> payroll.prepare (Phase
+  -- 38's seed), matching the spec's HR_PAYROLL-prepares/CFO-approves
+  -- chain — but until now nothing actually checked it, so an HR/Payroll
+  -- app-role holder who isn't also an old-system admin/accountant
+  -- couldn't submit payroll despite the permission matrix saying they
+  -- could. Purely additive: the existing admin/accountant path is
+  -- unchanged.
+  if not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
+     and not public.current_user_has_permission('payroll.prepare') then
     raise exception 'Not authorized to run payroll.';
   end if;
 
@@ -6576,7 +7278,8 @@ create function public.submit_purchase_invoice(
   p_invoice_date date,
   p_revenue_expense_account_id uuid,
   p_line_items jsonb,
-  p_custom_order_id uuid default null
+  p_custom_order_id uuid default null,
+  p_purchase_order_id uuid default null
 )
 returns public.approval_requests
 language plpgsql
@@ -6591,12 +7294,20 @@ declare
   v_invoice public.invoices;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to post invoices.';
   end if;
 
   if jsonb_array_length(p_line_items) = 0 then
     raise exception 'An invoice needs at least one line item.';
+  end if;
+  -- Phase 51: fulfilling an open purchase order, if this invoice was
+  -- raised for one.
+  if p_purchase_order_id is not null and not exists (
+    select 1 from public.purchase_orders
+    where id = p_purchase_order_id and company_id = v_company_id and status = 'open'
+  ) then
+    raise exception 'Purchase order not found, not in your company, or not open.';
   end if;
 
   -- Pre-tax subtotal only (sum of quantity*rate) — the same figure
@@ -6624,7 +7335,8 @@ begin
     jsonb_build_object(
       'p_party_id', p_party_id, 'p_invoice_date', p_invoice_date,
       'p_revenue_expense_account_id', p_revenue_expense_account_id,
-      'p_line_items', p_line_items, 'p_custom_order_id', p_custom_order_id
+      'p_line_items', p_line_items, 'p_custom_order_id', p_custom_order_id,
+      'p_purchase_order_id', p_purchase_order_id
     ),
     v_chain, 0,
     case when jsonb_array_length(v_chain) = 0 then 'approved' else 'pending' end
@@ -6634,6 +7346,9 @@ begin
     v_invoice := public._post_invoice_core(
       v_company_id, 'purchase', p_party_id, p_invoice_date, p_revenue_expense_account_id, p_line_items, p_custom_order_id
     );
+    if p_purchase_order_id is not null then
+      update public.purchase_orders set status = 'fulfilled' where id = p_purchase_order_id;
+    end if;
     update public.approval_requests set result_entity_id = v_invoice.id
       where id = v_request.id
       returning * into v_request;
@@ -6643,7 +7358,7 @@ begin
 end;
 $$;
 
-grant execute on function public.submit_purchase_invoice(uuid, date, uuid, jsonb, uuid) to authenticated;
+grant execute on function public.submit_purchase_invoice(uuid, date, uuid, jsonb, uuid, uuid) to authenticated;
 
 -- Placeholder tiers, same reasoning as Phases 40-41's seeds — meant to be
 -- edited to the real thresholds immediately via the UI. Three tiers this
@@ -6692,7 +7407,7 @@ declare
   v_wastage public.wastage;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to record wastage.';
   end if;
   if p_reason not in ('spoilage', 'expired', 'damaged', 'production_loss', 'preparation_loss', 'quality_rejection', 'other') then
@@ -6775,7 +7490,7 @@ declare
   v_invoice public.invoices;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to invoice projects.';
   end if;
 
@@ -6854,41 +7569,12 @@ on conflict (company_id, entity_type, min_amount) do nothing;
 -- Threshold basis: the claim amount itself — a known input before
 -- posting, same reasoning as fixed-asset cost/payroll gross salary.
 -- ============================================================
-create table public.expense_claims (
-  id uuid primary key default gen_random_uuid(),
-  company_id uuid not null references public.companies (id),
-  employee_id uuid not null references public.employees (id),
-  claim_date date not null,
-  description text not null,
-  -- Free text, same loose reasoning as items.category and
-  -- project_expenses.category — a handful of labels doesn't justify a
-  -- lookup table.
-  category text,
-  amount numeric(14, 2) not null check (amount > 0),
-  expense_account_id uuid not null references public.chart_of_accounts (id),
-  bank_account_id uuid not null references public.chart_of_accounts (id),
-  entry_group_id uuid not null,
-  created_at timestamptz not null default now()
-);
-
-alter table public.expense_claims enable row level security;
-
--- No insert/update/delete policies — all writes happen through
--- post_expense_claim()/submit_expense_claim() (SECURITY DEFINER), same
--- reasoning as invoices/payroll_runs. Employee role narrowed to own
--- records from creation (user_app_roles and current_user_linked_
--- employee_id already exist by this point in the file, unlike Phase 39's
--- original tables, so no drop+recreate-at-end-of-file trick is needed
--- here).
-create policy expense_claims_select on public.expense_claims
-  for select using (
-    company_id = public.current_user_company_id()
-    and (
-      public.current_user_role() <> 'viewer'
-      or not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'employee')
-      or employee_id = public.current_user_linked_employee_id()
-    )
-  );
+-- The expense_claims table itself (+ its RLS policy) is defined earlier
+-- in this file, immediately before approve_request() — that function's
+-- declare block needs the type to already exist for a fresh top-to-
+-- bottom install to work (a real bug caught in Phase 51's live-testing:
+-- CREATE FUNCTION eagerly resolves declared variable types, unlike
+-- statement bodies, which are only checked at first execution).
 
 -- Trusted internal helper — no authorization check, same reasoning as
 -- every other _xxx_core() function above. post_expense_claim() below is
@@ -6966,7 +7652,7 @@ declare
   v_company_id uuid;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to post expense claims.';
   end if;
   return public._post_expense_claim_core(
@@ -6999,7 +7685,7 @@ declare
   v_claim public.expense_claims;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to post expense claims.';
   end if;
 
@@ -7094,40 +7780,9 @@ on conflict (company_id, entity_type, min_amount) do nothing;
 -- security rather than loosening it, so it doesn't need the same
 -- multi-step sign-off granting does.
 -- ============================================================
-create table public.access_grants (
-  id uuid primary key default gen_random_uuid(),
-  company_id uuid not null references public.companies (id),
-  employee_id uuid not null references public.employees (id),
-  -- Free text, same loose reasoning as expense_claims.category — the set
-  -- of systems/tools this company's employees might need access to
-  -- isn't fixed enough to justify a lookup table.
-  system_name text not null,
-  access_level text not null,
-  reason text,
-  status text not null default 'active' check (status in ('active', 'revoked')),
-  granted_at timestamptz not null default now(),
-  revoked_at timestamptz,
-  revoked_by uuid references public.users (id),
-  created_at timestamptz not null default now(),
-  constraint access_grants_revoked_consistency
-    check ((status = 'revoked') = (revoked_at is not null))
-);
-
-alter table public.access_grants enable row level security;
-
--- No insert/update/delete policies — all writes happen through
--- grant_access()/submit_access_request()/revoke_access() (SECURITY
--- DEFINER), same reasoning as every other gated module. Employee role
--- narrowed to own records, same pattern as expense_claims/payroll_runs.
-create policy access_grants_select on public.access_grants
-  for select using (
-    company_id = public.current_user_company_id()
-    and (
-      public.current_user_role() <> 'viewer'
-      or not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'employee')
-      or employee_id = public.current_user_linked_employee_id()
-    )
-  );
+-- The access_grants table itself (+ its RLS policy) is defined earlier
+-- in this file, immediately before approve_request() — same
+-- fresh-install ordering reason as expense_claims above.
 
 -- Trusted internal helper — no authorization check, same reasoning as
 -- every other _xxx_core() function above. grant_access() below is the
@@ -7177,7 +7832,7 @@ declare
   v_company_id uuid;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to grant access.';
   end if;
   return public._grant_access_core(v_company_id, p_employee_id, p_system_name, p_access_level, p_reason);
@@ -7204,7 +7859,7 @@ declare
   v_grant public.access_grants;
 begin
   v_company_id := public.current_user_company_id();
-  if v_company_id is null or public.current_user_role() not in ('admin', 'accountant') then
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
     raise exception 'Not authorized to request access.';
   end if;
 
@@ -7255,7 +7910,7 @@ begin
   if v_company_id is null then
     raise exception 'Not authenticated.';
   end if;
-  if public.current_user_role() not in ('admin', 'accountant')
+  if not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
      and not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'cto') then
     raise exception 'Not authorized to revoke access.';
   end if;
@@ -7285,3 +7940,1842 @@ grant execute on function public.revoke_access(uuid, text) to authenticated;
 insert into public.approval_rules (company_id, entity_type, min_amount, approval_chain)
 select id, 'access_request', 0, '["cto"]'::jsonb from public.companies
 on conflict (company_id, entity_type, min_amount) do nothing;
+
+-- ============================================================
+-- Phase 47 — Permission Enforcement & Separation of Duties
+--
+-- Closes two real gaps found while auditing the RBAC initiative
+-- against a more detailed spec: (1) role_permissions already grants
+-- project_manager -> timesheets.approve, but nothing ever checked it —
+-- only admin/accountant could actually flip a timesheet's
+-- approval_status, so a pure Project Manager couldn't do what the
+-- permission matrix said they could; (2) approve_request()/
+-- reject_request() never checked whether the approver was also the
+-- submitter, so someone holding both roles could approve their own
+-- request. The separation-of-duties fix is applied in place, above,
+-- at approve_request()'s and reject_request()'s original definitions
+-- (search "Phase 47" there) — not repeated here. Likewise
+-- submit_payroll_run()'s gate was extended in place, above, to also
+-- accept current_user_has_permission('payroll.prepare') — the first
+-- real caller of that function since Phase 38 defined it.
+--
+-- set_timesheet_approval() is the fix for gap (1): a narrow,
+-- single-purpose SECURITY DEFINER RPC (touches only approval_status,
+-- nothing else) rather than loosening the timesheets_update RLS policy
+-- outright — Postgres RLS can't restrict an UPDATE to specific columns
+-- on its own, and this app's established pattern for "needs an
+-- authority check beyond raw RLS" is always a dedicated function, never
+-- a broadened blanket policy.
+-- ============================================================
+create function public.set_timesheet_approval(p_timesheet_id uuid, p_status text)
+returns public.timesheets
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_timesheet public.timesheets;
+  v_project public.projects;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null then
+    raise exception 'Not authenticated.';
+  end if;
+  if p_status not in ('approved', 'rejected') then
+    raise exception 'Status must be approved or rejected.';
+  end if;
+
+  select * into v_timesheet from public.timesheets where id = p_timesheet_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Timesheet entry not found in your company.';
+  end if;
+
+  select * into v_project from public.projects where id = v_timesheet.project_id and company_id = v_company_id;
+
+  if not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
+     and not (
+       public.current_user_has_permission('timesheets.approve')
+       and v_project.project_manager_employee_id = public.current_user_linked_employee_id()
+     ) then
+    raise exception 'Not authorized to approve this timesheet.';
+  end if;
+
+  update public.timesheets set approval_status = p_status where id = p_timesheet_id
+    returning * into v_timesheet;
+
+  return v_timesheet;
+end;
+$$;
+
+grant execute on function public.set_timesheet_approval(uuid, text) to authenticated;
+
+-- ============================================================
+-- Phase 48 — Reversal Completeness
+--
+-- cancel_invoice(), cancel_payment(), and dispose_fixed_asset() already
+-- established the pattern: never delete or edit a posted row, insert a
+-- reversing journal entry (and reversing stock_ledger rows where stock
+-- moved) sharing a new entry_group_id, and mark the original row with a
+-- terminal status. Three modules never got this: payroll runs, wastage,
+-- and expense claims. This phase extends the exact same pattern to all
+-- three (their status columns were added in place at each table's
+-- original definition above — search "Phase 48" there).
+--
+-- Project/consulting invoices already reuse cancel_invoice() since they
+-- post through the same invoices table — no new function needed for
+-- them, but cancelling one used to leave its billed timesheets
+-- permanently stuck pointing at a cancelled invoice; cancel_invoice()
+-- itself was extended above (search "Phase 48" there) to null out
+-- timesheets.invoice_id, so this is a real fix, not just confirmation.
+-- ============================================================
+create function public.reverse_payroll_run(p_payroll_run_id uuid)
+returns public.payroll_runs
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_run public.payroll_runs;
+  v_reversal_group uuid := gen_random_uuid();
+  v_leg record;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
+    raise exception 'Not authorized to reverse payroll runs.';
+  end if;
+
+  select * into v_run from public.payroll_runs where id = p_payroll_run_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Payroll run not found in your company.';
+  end if;
+  if v_run.status <> 'posted' then
+    raise exception 'Only a posted payroll run can be reversed (current status: %).', v_run.status;
+  end if;
+
+  perform public.reject_if_period_closed(v_company_id, current_date);
+
+  for v_leg in
+    select account_id, debit, credit from public.journal_entries where entry_group_id = v_run.entry_group_id
+  loop
+    insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+    values (v_company_id, v_reversal_group, current_date, v_leg.account_id, v_leg.credit, v_leg.debit, 'payroll_reversal', v_run.id);
+  end loop;
+
+  update public.payroll_runs set status = 'reversed' where id = v_run.id returning * into v_run;
+
+  return v_run;
+end;
+$$;
+
+grant execute on function public.reverse_payroll_run(uuid) to authenticated;
+
+create function public.cancel_wastage(p_wastage_id uuid)
+returns public.wastage
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_wastage public.wastage;
+  v_reversal_group uuid := gen_random_uuid();
+  v_leg record;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
+    raise exception 'Not authorized to cancel wastage entries.';
+  end if;
+
+  select * into v_wastage from public.wastage where id = p_wastage_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Wastage entry not found in your company.';
+  end if;
+  if v_wastage.status <> 'posted' then
+    raise exception 'Only a posted wastage entry can be cancelled (current status: %).', v_wastage.status;
+  end if;
+
+  perform public.reject_if_period_closed(v_company_id, current_date);
+
+  -- Reverses the journal entry (a no-op loop if cost was 0, since
+  -- _post_wastage_core() only posts a journal entry when cost > 0).
+  for v_leg in
+    select account_id, debit, credit from public.journal_entries where entry_group_id = v_wastage.entry_group_id
+  loop
+    insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+    values (v_company_id, v_reversal_group, current_date, v_leg.account_id, v_leg.credit, v_leg.debit, 'wastage_cancellation', v_wastage.id);
+  end loop;
+
+  -- Restores the exact quantity to the exact batches consume_item_fefo()
+  -- took it from — a blind reference-based reversal, same as
+  -- cancel_invoice()'s stock_ledger loop, not a fresh FEFO allocation.
+  for v_leg in
+    select item_id, batch_id, warehouse_id, quantity, direction from public.stock_ledger
+    where reference_type = 'wastage' and reference_id = v_wastage.id
+  loop
+    insert into public.stock_ledger (company_id, item_id, batch_id, warehouse_id, reference_type, reference_id, quantity, direction, movement_date)
+    values (
+      v_company_id, v_leg.item_id, v_leg.batch_id, v_leg.warehouse_id, 'wastage', v_wastage.id, v_leg.quantity,
+      case when v_leg.direction = 'in' then 'out' else 'in' end,
+      current_date
+    );
+  end loop;
+
+  update public.wastage set status = 'cancelled' where id = v_wastage.id returning * into v_wastage;
+
+  return v_wastage;
+end;
+$$;
+
+grant execute on function public.cancel_wastage(uuid) to authenticated;
+
+create function public.cancel_expense_claim(p_expense_claim_id uuid)
+returns public.expense_claims
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_claim public.expense_claims;
+  v_reversal_group uuid := gen_random_uuid();
+  v_leg record;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
+    raise exception 'Not authorized to cancel expense claims.';
+  end if;
+
+  select * into v_claim from public.expense_claims where id = p_expense_claim_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Expense claim not found in your company.';
+  end if;
+  if v_claim.status <> 'posted' then
+    raise exception 'Only a posted expense claim can be cancelled (current status: %).', v_claim.status;
+  end if;
+
+  perform public.reject_if_period_closed(v_company_id, current_date);
+
+  for v_leg in
+    select account_id, debit, credit from public.journal_entries where entry_group_id = v_claim.entry_group_id
+  loop
+    insert into public.journal_entries (company_id, entry_group_id, entry_date, account_id, debit, credit, reference_type, reference_id)
+    values (v_company_id, v_reversal_group, current_date, v_leg.account_id, v_leg.credit, v_leg.debit, 'expense_claim_cancellation', v_claim.id);
+  end loop;
+
+  update public.expense_claims set status = 'cancelled' where id = v_claim.id returning * into v_claim;
+
+  return v_claim;
+end;
+$$;
+
+grant execute on function public.cancel_expense_claim(uuid) to authenticated;
+
+-- ============================================================
+-- Phase 49 — Approval Workflows, eighth module: Sales Invoice Discounts
+--
+-- Matches the spec's Sales chain (section 6): routine sales post
+-- immediately; a discount above a configured threshold needs Manager/
+-- CMO/COO approval. Unlike every module in Phases 40-48, the gated
+-- dimension is a PERCENTAGE (0-100), not an amount or quantity —
+-- approval_rules.min_amount is reused to hold that percentage, same
+-- precedent as Phase 43's wastage module reusing it for quantity
+-- instead of cost. A tier at min_amount=10 therefore means "10% or
+-- more" (inclusive), matching how every other module's own threshold
+-- already works (e.g. Phase 40's fixed-asset tier at 50,000 requires
+-- approval AT exactly 50,000, not just above) — a one-point stricter
+-- reading than the spec's literal ">10%", not a hardcoded business
+-- rule; editable via the Roles & Permissions UI like every other
+-- threshold.
+--
+-- Discount is sales-only — see _post_invoice_core()'s guard above (Phase
+-- 49) for why a purchase-side "discount" isn't modeled. `_post_invoice_
+-- core()` itself now computes and stores discount_pct/discount_amount
+-- (in place at its original definition — search "Phase 49" there); this
+-- section only adds the submission/approval wrapper around it.
+-- ============================================================
+create function public.submit_sales_invoice(
+  p_party_id uuid,
+  p_invoice_date date,
+  p_revenue_expense_account_id uuid,
+  p_line_items jsonb,
+  p_discount_pct numeric default 0,
+  p_custom_order_id uuid default null
+)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_chain jsonb;
+  v_request public.approval_requests;
+  v_invoice public.invoices;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
+    raise exception 'Not authorized to post invoices.';
+  end if;
+  if p_discount_pct < 0 or p_discount_pct > 100 then
+    raise exception 'Discount percent must be between 0 and 100.';
+  end if;
+
+  select approval_chain into v_chain
+    from public.approval_rules
+    where company_id = v_company_id and entity_type = 'sales_invoice_discount' and min_amount <= p_discount_pct
+    order by min_amount desc
+    limit 1;
+  v_chain := coalesce(v_chain, '[]'::jsonb);
+
+  insert into public.approval_requests (
+    company_id, entity_type, requested_by, amount, payload, approval_chain, current_step, status
+  ) values (
+    v_company_id, 'sales_invoice_discount', auth.uid(), p_discount_pct,
+    jsonb_build_object(
+      'p_party_id', p_party_id, 'p_invoice_date', p_invoice_date,
+      'p_revenue_expense_account_id', p_revenue_expense_account_id, 'p_line_items', p_line_items,
+      'p_discount_pct', p_discount_pct, 'p_custom_order_id', p_custom_order_id
+    ),
+    v_chain, 0,
+    case when jsonb_array_length(v_chain) = 0 then 'approved' else 'pending' end
+  ) returning * into v_request;
+
+  if jsonb_array_length(v_chain) = 0 then
+    v_invoice := public._post_invoice_core(
+      v_company_id, 'sales', p_party_id, p_invoice_date, p_revenue_expense_account_id, p_line_items,
+      p_custom_order_id, p_discount_pct
+    );
+    update public.approval_requests set result_entity_id = v_invoice.id
+      where id = v_request.id
+      returning * into v_request;
+  end if;
+
+  return v_request;
+end;
+$$;
+
+grant execute on function public.submit_sales_invoice(uuid, date, uuid, jsonb, numeric, uuid) to authenticated;
+
+-- Two tiers: 0% -> no approval (matches today's behavior for every
+-- undiscounted or lightly-discounted sale), 10%+ -> COO. A placeholder
+-- default, not a compliance-blessed number — edit via the UI.
+insert into public.approval_rules (company_id, entity_type, min_amount, approval_chain)
+select id, 'sales_invoice_discount', 0, '[]'::jsonb from public.companies
+union all
+select id, 'sales_invoice_discount', 10, '["coo"]'::jsonb from public.companies
+on conflict (company_id, entity_type, min_amount) do nothing;
+
+-- ============================================================
+-- Phase 50 — Approval Workflows, ninth module: Manual Credit/Debit Notes
+--
+-- Matches the spec's section 7 exactly: "This needs stronger control
+-- because it directly changes revenue/tax" — Create -> Submit ->
+-- Accountant reviews -> CFO approves -> Post, with CFO -> CEO for
+-- high-value adjustments. post_manual_credit_debit_note() (a
+-- pre-existing feature, not new to this phase — already correctly
+-- proportionally-scales each line's own posted tax amounts and tracks
+-- remaining-quantity to prevent double-crediting) had no approval gate
+-- at all before this; extracted into the same core+wrapper split as
+-- every module in Phases 40-49.
+--
+-- **Deliberate departure from every other module's seed convention**:
+-- every other module seeds a min_amount=0 -> [] tier that reproduces
+-- "today's immediate-post behavior" exactly, since that behavior
+-- already existed and had to stay unchanged for zero regression. A
+-- manual credit/debit note has no such prior behavior to preserve — it
+-- never had a UI-driven approval step before — so there is no
+-- backward-compatibility reason to keep it auto-postable by default.
+-- The spec's own workflow diagram never shows a "no approval needed"
+-- path for this document type at all. Seeded accordingly: even the
+-- ₹0 tier requires CFO sign-off; only the CEO co-signature is
+-- threshold-gated. Still fully editable via the Roles & Permissions UI
+-- like every other threshold — an admin can set the base tier's chain
+-- back to [] if automatic posting for small notes is actually wanted.
+--
+-- Threshold basis: the note's own pre-tax subtotal — a cheaply
+-- computable known input (the same proportional-scaling arithmetic the
+-- core itself does, just for the taxable portion), same reasoning as
+-- Phase 42's purchase-invoice subtotal.
+-- ============================================================
+create function public.submit_credit_debit_note(
+  p_invoice_id uuid,
+  p_reason text,
+  p_line_adjustments jsonb
+)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_chain jsonb;
+  v_amount numeric(14, 2) := 0;
+  v_adj jsonb;
+  v_line public.invoice_line_items;
+  v_request public.approval_requests;
+  v_note public.credit_notes;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
+    raise exception 'Not authorized to issue credit/debit notes.';
+  end if;
+
+  if jsonb_array_length(p_line_adjustments) = 0 then
+    raise exception 'A credit/debit note needs at least one line adjustment.';
+  end if;
+
+  -- Cheap preview of the note's own pre-tax subtotal, purely to resolve
+  -- the applicable approval tier — the same proportional-scaling
+  -- arithmetic _post_manual_credit_debit_note_core() does authoritatively;
+  -- this is read-only and changes nothing.
+  for v_adj in select * from jsonb_array_elements(p_line_adjustments)
+  loop
+    select ili.* into v_line
+      from public.invoice_line_items ili
+      join public.invoices i on i.id = ili.invoice_id
+      where ili.id = (v_adj->>'invoice_line_item_id')::uuid and i.company_id = v_company_id;
+    if not found then
+      raise exception 'Line item % does not belong to your company.', v_adj->>'invoice_line_item_id';
+    end if;
+    v_amount := v_amount + round(v_line.taxable_value * ((v_adj->>'quantity')::numeric / v_line.quantity), 2);
+  end loop;
+
+  select approval_chain into v_chain
+    from public.approval_rules
+    where company_id = v_company_id and entity_type = 'credit_debit_note' and min_amount <= v_amount
+    order by min_amount desc
+    limit 1;
+  v_chain := coalesce(v_chain, '[]'::jsonb);
+
+  insert into public.approval_requests (
+    company_id, entity_type, requested_by, amount, payload, approval_chain, current_step, status
+  ) values (
+    v_company_id, 'credit_debit_note', auth.uid(), v_amount,
+    jsonb_build_object('p_invoice_id', p_invoice_id, 'p_reason', p_reason, 'p_line_adjustments', p_line_adjustments),
+    v_chain, 0,
+    case when jsonb_array_length(v_chain) = 0 then 'approved' else 'pending' end
+  ) returning * into v_request;
+
+  if jsonb_array_length(v_chain) = 0 then
+    v_note := public._post_manual_credit_debit_note_core(v_company_id, p_invoice_id, p_reason, p_line_adjustments);
+    update public.approval_requests set result_entity_id = v_note.id
+      where id = v_request.id
+      returning * into v_request;
+  end if;
+
+  return v_request;
+end;
+$$;
+
+grant execute on function public.submit_credit_debit_note(uuid, text, jsonb) to authenticated;
+
+-- Every tier requires at least CFO — see the Phase 50 header comment
+-- above for why there's no free auto-post tier here. 100,000+ also
+-- needs the CEO. Placeholder defaults, not compliance-blessed numbers —
+-- edit via the UI.
+insert into public.approval_rules (company_id, entity_type, min_amount, approval_chain)
+select id, 'credit_debit_note', 0, '["cfo"]'::jsonb from public.companies
+union all
+select id, 'credit_debit_note', 100000, '["cfo", "ceo"]'::jsonb from public.companies
+on conflict (company_id, entity_type, min_amount) do nothing;
+
+-- ============================================================
+-- Phase 51 — Approval Workflows, tenth module: Purchase Request →
+-- Purchase Order
+--
+-- Matches the spec's section 8 fuller purchase flow: Inventory Manager
+-- raises a Purchase Request -> COO approves it (that approval directly
+-- authorizes a Purchase Order — the diagram never shows a separate
+-- approval step for the order itself) -> an Accountant later fulfills
+-- that order with a real Purchase Invoice (already gated since Phase
+-- 42) -> CFO approves if above the existing invoice threshold. High-
+-- value requests additionally need CFO and CEO.
+--
+-- Genuinely new entities, not a gate on something pre-existing — unlike
+-- every module in Phases 40-50. Neither purchase_requests nor
+-- purchase_orders posts anything financial; the only ledger effect
+-- happens later, when the already-gated purchase invoice is actually
+-- created against an open order.
+--
+-- Threshold basis: an ESTIMATED amount the requester supplies — there is
+-- no canonical "price" on an item in this schema (a raw material's
+-- average_cost only exists after a purchase, and a first-time item has
+-- none at all), so unlike every other module's threshold, this one
+-- can't be derived from existing data. It's an honest requester
+-- estimate for routing purposes only; the REAL amount is determined
+-- independently and re-gated on its own terms when the eventual
+-- purchase invoice is created.
+--
+-- Same seed-convention departure as Phase 50's credit/debit notes and
+-- for the same reason: COO approval is always required (the spec's own
+-- diagram shows no auto-post path for a purchase request), only the
+-- CFO+CEO escalation is threshold-gated.
+-- ============================================================
+-- purchase_requests/purchase_orders themselves (+ their RLS policies)
+-- are defined earlier in this file, immediately before approve_request()
+-- — same fresh-install ordering reason as expense_claims/access_grants
+-- above.
+
+-- Trusted internal helper — no authorization check, same reasoning as
+-- every other _xxx_core() function in this schema. create_purchase_
+-- request() below is the direct-call entry point and checks
+-- admin/accountant itself; submit_purchase_request()/approve_request()
+-- call this directly instead, since authority was already verified by
+-- the time either reaches it.
+create function public._create_purchase_request_core(
+  p_company_id uuid,
+  p_requested_by uuid,
+  p_item_id uuid,
+  p_quantity numeric,
+  p_estimated_amount numeric,
+  p_vendor_party_id uuid,
+  p_notes text
+)
+returns public.purchase_orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid := p_company_id;
+  v_request public.purchase_requests;
+  v_order public.purchase_orders;
+begin
+  if not exists (select 1 from public.items where id = p_item_id and company_id = v_company_id) then
+    raise exception 'Item not found in your company.';
+  end if;
+  if p_vendor_party_id is not null and not exists (
+    select 1 from public.parties where id = p_vendor_party_id and company_id = v_company_id and type in ('vendor', 'both')
+  ) then
+    raise exception 'Vendor not found, not in your company, or not a vendor.';
+  end if;
+
+  insert into public.purchase_requests (
+    company_id, requested_by, item_id, quantity, estimated_amount, vendor_party_id, notes
+  ) values (
+    v_company_id, p_requested_by, p_item_id, p_quantity, p_estimated_amount, p_vendor_party_id, p_notes
+  ) returning * into v_request;
+
+  insert into public.purchase_orders (company_id, purchase_request_id, item_id, quantity, vendor_party_id)
+  values (v_company_id, v_request.id, p_item_id, p_quantity, p_vendor_party_id)
+  returning * into v_order;
+
+  return v_order;
+end;
+$$;
+
+create function public.create_purchase_request(
+  p_item_id uuid,
+  p_quantity numeric,
+  p_estimated_amount numeric,
+  p_vendor_party_id uuid default null,
+  p_notes text default null
+)
+returns public.purchase_orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
+    raise exception 'Not authorized to create purchase requests.';
+  end if;
+  return public._create_purchase_request_core(
+    v_company_id, auth.uid(), p_item_id, p_quantity, p_estimated_amount, p_vendor_party_id, p_notes
+  );
+end;
+$$;
+
+grant execute on function public.create_purchase_request(uuid, numeric, numeric, uuid, text) to authenticated;
+
+create function public.submit_purchase_request(
+  p_item_id uuid,
+  p_quantity numeric,
+  p_estimated_amount numeric,
+  p_vendor_party_id uuid default null,
+  p_notes text default null
+)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_chain jsonb;
+  v_request public.approval_requests;
+  v_order public.purchase_orders;
+begin
+  v_company_id := public.current_user_company_id();
+  -- Phase 51: current_user_has_permission() gate, same precedent as
+  -- Phase 47's submit_payroll_run() — role_permissions grants
+  -- inventory_manager -> purchase_request.create (seeded below), the
+  -- spec's actual submitter for this document.
+  if v_company_id is null then
+    raise exception 'Not authenticated.';
+  end if;
+  if not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
+     and not public.current_user_has_permission('purchase_request.create') then
+    raise exception 'Not authorized to create purchase requests.';
+  end if;
+  if p_quantity <= 0 then
+    raise exception 'Quantity must be greater than zero.';
+  end if;
+  if p_estimated_amount < 0 then
+    raise exception 'Estimated amount cannot be negative.';
+  end if;
+
+  select approval_chain into v_chain
+    from public.approval_rules
+    where company_id = v_company_id and entity_type = 'purchase_request' and min_amount <= p_estimated_amount
+    order by min_amount desc
+    limit 1;
+  v_chain := coalesce(v_chain, '[]'::jsonb);
+
+  insert into public.approval_requests (
+    company_id, entity_type, requested_by, amount, payload, approval_chain, current_step, status
+  ) values (
+    v_company_id, 'purchase_request', auth.uid(), p_estimated_amount,
+    jsonb_build_object(
+      'p_item_id', p_item_id, 'p_quantity', p_quantity, 'p_estimated_amount', p_estimated_amount,
+      'p_vendor_party_id', p_vendor_party_id, 'p_notes', p_notes
+    ),
+    v_chain, 0,
+    case when jsonb_array_length(v_chain) = 0 then 'approved' else 'pending' end
+  ) returning * into v_request;
+
+  if jsonb_array_length(v_chain) = 0 then
+    v_order := public._create_purchase_request_core(
+      v_company_id, auth.uid(), p_item_id, p_quantity, p_estimated_amount, p_vendor_party_id, p_notes
+    );
+    update public.approval_requests set result_entity_id = v_order.id
+      where id = v_request.id
+      returning * into v_request;
+  end if;
+
+  return v_request;
+end;
+$$;
+
+grant execute on function public.submit_purchase_request(uuid, numeric, numeric, uuid, text) to authenticated;
+
+create function public.cancel_purchase_order(p_purchase_order_id uuid)
+returns public.purchase_orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_order public.purchase_orders;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null then
+    raise exception 'Not authenticated.';
+  end if;
+  if not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
+     and not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'coo') then
+    raise exception 'Not authorized to cancel purchase orders.';
+  end if;
+
+  select * into v_order from public.purchase_orders where id = p_purchase_order_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Purchase order not found in your company.';
+  end if;
+  if v_order.status <> 'open' then
+    raise exception 'Only an open purchase order can be cancelled (current status: %).', v_order.status;
+  end if;
+
+  update public.purchase_orders set status = 'cancelled' where id = p_purchase_order_id
+    returning * into v_order;
+
+  return v_order;
+end;
+$$;
+
+grant execute on function public.cancel_purchase_order(uuid) to authenticated;
+
+-- inventory_manager is the spec's actual submitter for this document —
+-- a new, precisely-named permission key rather than overloading the
+-- existing inventory.create (which is about stock counts/adjustments,
+-- a different action).
+insert into public.role_permissions (app_role, permission_key) values
+  ('inventory_manager', 'purchase_request.create')
+on conflict (app_role, permission_key) do nothing;
+
+-- COO always required (no auto-post tier — see the Phase 51 header
+-- comment above for why); 500,000+ also needs CFO and CEO. Placeholder
+-- defaults, not compliance-blessed numbers — edit via the UI.
+insert into public.approval_rules (company_id, entity_type, min_amount, approval_chain)
+select id, 'purchase_request', 0, '["coo"]'::jsonb from public.companies
+union all
+select id, 'purchase_request', 500000, '["coo", "cfo", "ceo"]'::jsonb from public.companies
+on conflict (company_id, entity_type, min_amount) do nothing;
+
+-- ============================================================
+-- Phase 52 — Approval Workflows, eleventh module: Production Entries
+--
+-- Matches the spec's section 10: Kitchen Staff records production ->
+-- Kitchen Manager approves -> (COO for higher-level operational
+-- approval on large batches). _post_production_entry_core() extracted
+-- from the pre-existing post_production_entry(), same core+wrapper
+-- split as every module in Phases 40-51 — post_production_entry() keeps
+-- its own admin/accountant check, unchanged for its existing direct
+-- caller. submit_production_entry() (the new entry point
+-- ProductionEntry.jsx now calls) and approve_request()'s new
+-- production_entry branch call the core directly.
+--
+-- Threshold basis: QUANTITY PRODUCED, not cost — same reasoning and
+-- same precedent as Phase 43's wastage module: the batch's actual cost
+-- is only known once consume_item_fefo() runs inside the core (it
+-- depends on which specific raw-material batches get consumed), so
+-- there's no cheap way to preview cost before deciding whether a
+-- submission needs approval. Unlike Phases 50/51's credit-notes/
+-- purchase-requests, this one DOES keep a free auto-post tier at
+-- quantity 0 — production is routine, high-frequency kitchen output,
+-- not an exception-driven document, so the spec's own framing (and
+-- today's existing unconditional direct-post behavior) argues for the
+-- normal convention here, not the "always needs sign-off" departure.
+-- ============================================================
+create function public.submit_production_entry(
+  p_finished_good_item_id uuid,
+  p_quantity_produced numeric,
+  p_production_date date,
+  p_expiry_date date,
+  p_consumptions jsonb,
+  p_custom_order_id uuid default null
+)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_chain jsonb;
+  v_request public.approval_requests;
+  v_production public.production_entries;
+begin
+  v_company_id := public.current_user_company_id();
+  -- Phase 52: current_user_has_permission() gate, same precedent as
+  -- Phase 47's submit_payroll_run() — role_permissions grants
+  -- kitchen_manager -> production.create (seeded below), the spec's
+  -- actual submitter for this document.
+  if v_company_id is null then
+    raise exception 'Not authenticated.';
+  end if;
+  if not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
+     and not public.current_user_has_permission('production.create') then
+    raise exception 'Not authorized to record production.';
+  end if;
+  if p_quantity_produced <= 0 then
+    raise exception 'Quantity produced must be positive.';
+  end if;
+
+  select approval_chain into v_chain
+    from public.approval_rules
+    where company_id = v_company_id and entity_type = 'production_entry' and min_amount <= p_quantity_produced
+    order by min_amount desc
+    limit 1;
+  v_chain := coalesce(v_chain, '[]'::jsonb);
+
+  insert into public.approval_requests (
+    company_id, entity_type, requested_by, amount, payload, approval_chain, current_step, status
+  ) values (
+    v_company_id, 'production_entry', auth.uid(), p_quantity_produced,
+    jsonb_build_object(
+      'p_finished_good_item_id', p_finished_good_item_id, 'p_quantity_produced', p_quantity_produced,
+      'p_production_date', p_production_date, 'p_expiry_date', p_expiry_date,
+      'p_consumptions', p_consumptions, 'p_custom_order_id', p_custom_order_id
+    ),
+    v_chain, 0,
+    case when jsonb_array_length(v_chain) = 0 then 'approved' else 'pending' end
+  ) returning * into v_request;
+
+  if jsonb_array_length(v_chain) = 0 then
+    v_production := public._post_production_entry_core(
+      v_company_id, p_finished_good_item_id, p_quantity_produced, p_production_date, p_expiry_date,
+      p_consumptions, p_custom_order_id
+    );
+    update public.approval_requests set result_entity_id = v_production.id
+      where id = v_request.id
+      returning * into v_request;
+  end if;
+
+  return v_request;
+end;
+$$;
+
+grant execute on function public.submit_production_entry(uuid, numeric, date, date, jsonb, uuid) to authenticated;
+
+-- kitchen_manager is the spec's actual submitter for this document — a
+-- new, precisely-named permission key rather than overloading the
+-- existing kitchen.create (which is about kitchen/menu orders, a
+-- different action).
+insert into public.role_permissions (app_role, permission_key) values
+  ('kitchen_manager', 'production.create')
+on conflict (app_role, permission_key) do nothing;
+
+-- 0 -> no approval (matches today's existing direct-post behavior
+-- exactly); 500+ units also needs Kitchen Manager then COO. Placeholder
+-- defaults, not compliance-blessed numbers — edit via the UI.
+insert into public.approval_rules (company_id, entity_type, min_amount, approval_chain)
+select id, 'production_entry', 0, '[]'::jsonb from public.companies
+union all
+select id, 'production_entry', 500, '["kitchen_manager", "coo"]'::jsonb from public.companies
+on conflict (company_id, entity_type, min_amount) do nothing;
+
+-- ============================================================
+-- Phase 53 — Approval Workflows, twelfth module: Bank Reconciliation
+--
+-- Matches the spec's section 19: Accountant imports a statement, matches
+-- transactions, prepares the reconciliation -> CFO approves. Unlike
+-- every module in Phases 40-52, there was no existing posting function
+-- to gate at all — matching a bank_transactions row to a payment was (and
+-- still is) a plain table UPDATE via the existing Reconciliation.jsx UI,
+-- with no financial/ledger effect and no "batch" concept. This phase adds
+-- that concept as a genuinely new, small workflow layered on top of the
+-- unchanged existing matching mechanism, not a replacement of it:
+--
+-- 1. create_bank_reconciliation() opens a DRAFT period for one bank
+--    account (from the statement's own opening/closing balance) — no
+--    approval needed to start; this is just data entry, same as every
+--    other module's underlying "the transaction/entry exists" step
+--    before Phase 40 ever gated anything.
+-- 2. The accountant keeps using the EXISTING, unchanged match/unmatch UI
+--    freely while the reconciliation is 'draft'.
+-- 3. submit_bank_reconciliation() snapshots every currently-matched,
+--    not-yet-claimed transaction in that account+period into this
+--    reconciliation (bank_transactions.reconciliation_id), so further
+--    matching elsewhere can't silently change what's being reviewed, then
+--    resolves the approval chain exactly like every other module.
+--
+-- Because the row already exists by submission time (unlike every other
+-- module, where the core function creates it from scratch),
+-- _finalize_bank_reconciliation_core() only flips status to 'approved' —
+-- it doesn't insert anything. Rejection needed its own first-ever
+-- entity-specific branch in reject_request() (see there) to free the
+-- claimed transactions for a corrected resubmission.
+--
+-- Threshold basis: the reconciled total's absolute value — amounts are
+-- signed (inflow/outflow), so a large outflow-heavy period shouldn't
+-- read as "small" just because the sum is negative.
+-- ============================================================
+alter table public.bank_transactions add column reconciliation_id uuid references public.bank_reconciliations (id);
+
+create function public.create_bank_reconciliation(
+  p_bank_account_id uuid,
+  p_period_start date,
+  p_period_end date,
+  p_opening_balance numeric,
+  p_closing_balance numeric
+)
+returns public.bank_reconciliations
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_recon public.bank_reconciliations;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
+    raise exception 'Not authorized to prepare bank reconciliations.';
+  end if;
+  if p_period_end < p_period_start then
+    raise exception 'Period end must be on or after period start.';
+  end if;
+  if not exists (select 1 from public.bank_accounts where id = p_bank_account_id and company_id = v_company_id) then
+    raise exception 'Bank account not found in your company.';
+  end if;
+
+  insert into public.bank_reconciliations (
+    company_id, bank_account_id, period_start, period_end, opening_balance, closing_balance, prepared_by
+  ) values (
+    v_company_id, p_bank_account_id, p_period_start, p_period_end, p_opening_balance, p_closing_balance, auth.uid()
+  ) returning * into v_recon;
+
+  return v_recon;
+end;
+$$;
+
+grant execute on function public.create_bank_reconciliation(uuid, date, date, numeric, numeric) to authenticated;
+
+-- Trusted internal helper — no authorization check, same reasoning as
+-- every other _xxx_core() function in this schema. Unlike every other
+-- core, this one finalizes an already-existing 'pending' row rather than
+-- creating one from scratch (see the Phase 53 header comment above).
+create function public._finalize_bank_reconciliation_core(
+  p_company_id uuid,
+  p_reconciliation_id uuid
+)
+returns public.bank_reconciliations
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid := p_company_id;
+  v_recon public.bank_reconciliations;
+begin
+  select * into v_recon from public.bank_reconciliations where id = p_reconciliation_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Bank reconciliation not found in your company.';
+  end if;
+
+  update public.bank_reconciliations set status = 'approved', approved_at = now()
+    where id = p_reconciliation_id
+    returning * into v_recon;
+
+  return v_recon;
+end;
+$$;
+
+create function public.submit_bank_reconciliation(p_reconciliation_id uuid)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_recon public.bank_reconciliations;
+  v_chain jsonb;
+  v_reconciled_total numeric(14, 2);
+  v_request public.approval_requests;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
+    raise exception 'Not authorized to submit bank reconciliations.';
+  end if;
+
+  select * into v_recon from public.bank_reconciliations where id = p_reconciliation_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Bank reconciliation not found in your company.';
+  end if;
+  if v_recon.status <> 'draft' then
+    raise exception 'Only a draft reconciliation can be submitted (current status: %).', v_recon.status;
+  end if;
+
+  select coalesce(sum(amount), 0) into v_reconciled_total
+    from public.bank_transactions
+    where bank_account_id = v_recon.bank_account_id
+      and transaction_date between v_recon.period_start and v_recon.period_end
+      and matched_payment_id is not null
+      and reconciliation_id is null;
+
+  -- Claim every currently-matched, not-yet-claimed transaction in this
+  -- period — snapshotting exactly what's being submitted for review, so
+  -- further matching elsewhere can't silently change it underneath the
+  -- approver.
+  update public.bank_transactions
+    set reconciliation_id = p_reconciliation_id
+    where bank_account_id = v_recon.bank_account_id
+      and transaction_date between v_recon.period_start and v_recon.period_end
+      and matched_payment_id is not null
+      and reconciliation_id is null;
+
+  update public.bank_reconciliations
+    set reconciled_total = v_reconciled_total, status = 'pending'
+    where id = p_reconciliation_id
+    returning * into v_recon;
+
+  select approval_chain into v_chain
+    from public.approval_rules
+    where company_id = v_company_id and entity_type = 'bank_reconciliation' and min_amount <= abs(v_reconciled_total)
+    order by min_amount desc
+    limit 1;
+  v_chain := coalesce(v_chain, '[]'::jsonb);
+
+  insert into public.approval_requests (
+    company_id, entity_type, requested_by, amount, payload, approval_chain, current_step, status
+  ) values (
+    v_company_id, 'bank_reconciliation', auth.uid(), abs(v_reconciled_total),
+    jsonb_build_object('p_reconciliation_id', p_reconciliation_id),
+    v_chain, 0,
+    case when jsonb_array_length(v_chain) = 0 then 'approved' else 'pending' end
+  ) returning * into v_request;
+
+  if jsonb_array_length(v_chain) = 0 then
+    perform public._finalize_bank_reconciliation_core(v_company_id, p_reconciliation_id);
+    update public.approval_requests set result_entity_id = p_reconciliation_id
+      where id = v_request.id
+      returning * into v_request;
+  end if;
+
+  return v_request;
+end;
+$$;
+
+grant execute on function public.submit_bank_reconciliation(uuid) to authenticated;
+
+-- 0 -> no approval (a small/routine reconciliation posts immediately);
+-- 500,000+ absolute value also needs CFO. Placeholder defaults, not
+-- compliance-blessed numbers — edit via the UI.
+insert into public.approval_rules (company_id, entity_type, min_amount, approval_chain)
+select id, 'bank_reconciliation', 0, '[]'::jsonb from public.companies
+union all
+select id, 'bank_reconciliation', 500000, '["cfo"]'::jsonb from public.companies
+on conflict (company_id, entity_type, min_amount) do nothing;
+
+-- bank_transactions_update tightened here, at the end of the file, not
+-- in place at its original early definition — same reason Phase 39's
+-- own RLS narrowing had to happen at the end of the file: this new
+-- USING clause references public.bank_reconciliations, which doesn't
+-- exist yet that early in a fresh install. Blocks changing
+-- matched_payment_id (or anything else) on a transaction once it's been
+-- claimed by a reconciliation that's pending review or already approved
+-- — otherwise a direct table PATCH (bypassing submit_bank_reconciliation()
+-- entirely) could silently alter what a CFO is reviewing or already
+-- signed off on. A rejected reconciliation's transactions are freed
+-- again (their reconciliation_id is cleared in reject_request()), so
+-- they're never blocked by this.
+drop policy bank_transactions_update on public.bank_transactions;
+create policy bank_transactions_update on public.bank_transactions
+  for update using (
+    company_id = public.current_user_company_id()
+    and (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
+    and not exists (
+      select 1 from public.bank_reconciliations br
+      where br.id = bank_transactions.reconciliation_id and br.status in ('pending', 'approved')
+    )
+  );
+
+-- ============================================================
+-- Phase 54 — Approval Workflows, thirteenth/fourteenth modules: GST
+-- Return and TDS Return sign-off
+-- Two genuinely new entities, not gates on existing functions — mirrors
+-- the read-only gstr3b_summary()/tds_summary() reports already in the
+-- app (Phases 8/32), adding a "prepare a draft -> submit -> CFO approves
+-- -> CA reviews" workflow on top, the same draft/pending/approved/
+-- rejected lifecycle Phase 53's bank reconciliation established. The
+-- underlying reports are UNCHANGED and stay available for ad hoc,
+-- non-filed lookups — creating a return is a deliberate, separate
+-- action, not something that happens automatically just by viewing the
+-- summary.
+--
+-- gst_returns snapshots the exact same figures gstr3b_summary() already
+-- reports (outward supplies net of sales credit notes, inward supplies
+-- net of purchase debit notes, each split CGST/SGST/IGST) via its own
+-- explicitly company-scoped queries below — it deliberately does NOT
+-- call gstr3b_summary() itself, since that function has no company_id
+-- filter of its own and instead relies entirely on RLS for scoping,
+-- which this SECURITY DEFINER function bypasses. It also does NOT
+-- compute a "net tax payable," for the same reason gstr3b_summary()
+-- itself doesn't (see its own header comment): the input-tax-credit
+-- set-off order is a real compliance rule that can change, and a CA
+-- should apply it to these raw figures, not have this app decide it.
+-- Locking these entities down is lower-risk than Phase 53's
+-- bank_transactions: invoices and credit/debit notes are already
+-- immutable once posted (no edit-after-post anywhere in this schema), so
+-- a filed return's source data can't silently change underneath it the
+-- way editable bank-statement lines could — no "claiming" mechanism is
+-- needed here.
+--
+-- tds_returns snapshots the total TDS deducted (Phase 32's
+-- tds_transactions) in the period. tds_transactions.deposited_on is
+-- deliberately left untouched by this workflow — it's an operational
+-- field naturally set AFTER a return is filed (when the TDS is actually
+-- paid to the government), not a figure this approval signs off on.
+--
+-- Threshold basis: unlike every module before this one, NEITHER return
+-- has a free auto-post tier at all, regardless of amount — filing with
+-- the government is always significant enough to need the full chain,
+-- so only a single flat approval_rules row (min_amount 0) is seeded for
+-- each, always resolving to ["cfo", "ca_auditor"]. This is the first
+-- appearance of 'ca_auditor' as a real approval-chain participant,
+-- matching the spec's literal "Accountant prepares -> CFO approves -> CA
+-- reviews" — the existing sequential approve_request() mechanism needed
+-- no changes at all to support a two-role, cfo-then-ca chain.
+-- ============================================================
+create function public.create_gst_return(p_period_start date, p_period_end date)
+returns public.gst_returns
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_return public.gst_returns;
+  v_sales_taxable numeric(14, 2); v_sales_cgst numeric(14, 2); v_sales_sgst numeric(14, 2); v_sales_igst numeric(14, 2);
+  v_sales_cn_taxable numeric(14, 2); v_sales_cn_cgst numeric(14, 2); v_sales_cn_sgst numeric(14, 2); v_sales_cn_igst numeric(14, 2);
+  v_purchase_taxable numeric(14, 2); v_purchase_cgst numeric(14, 2); v_purchase_sgst numeric(14, 2); v_purchase_igst numeric(14, 2);
+  v_purchase_dn_taxable numeric(14, 2); v_purchase_dn_cgst numeric(14, 2); v_purchase_dn_sgst numeric(14, 2); v_purchase_dn_igst numeric(14, 2);
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
+    raise exception 'Not authorized to prepare GST returns.';
+  end if;
+  if p_period_end < p_period_start then
+    raise exception 'Period end must be on or after period start.';
+  end if;
+
+  select coalesce(sum(subtotal), 0), coalesce(sum(cgst_total), 0), coalesce(sum(sgst_total), 0), coalesce(sum(igst_total), 0)
+    into v_sales_taxable, v_sales_cgst, v_sales_sgst, v_sales_igst
+    from public.invoices
+    where company_id = v_company_id and type = 'sales' and invoice_date between p_period_start and p_period_end;
+
+  select coalesce(sum(subtotal), 0), coalesce(sum(cgst_total), 0), coalesce(sum(sgst_total), 0), coalesce(sum(igst_total), 0)
+    into v_sales_cn_taxable, v_sales_cn_cgst, v_sales_cn_sgst, v_sales_cn_igst
+    from public.credit_notes
+    where company_id = v_company_id and type = 'sales' and note_date between p_period_start and p_period_end;
+
+  select coalesce(sum(subtotal), 0), coalesce(sum(cgst_total), 0), coalesce(sum(sgst_total), 0), coalesce(sum(igst_total), 0)
+    into v_purchase_taxable, v_purchase_cgst, v_purchase_sgst, v_purchase_igst
+    from public.invoices
+    where company_id = v_company_id and type = 'purchase' and invoice_date between p_period_start and p_period_end;
+
+  select coalesce(sum(subtotal), 0), coalesce(sum(cgst_total), 0), coalesce(sum(sgst_total), 0), coalesce(sum(igst_total), 0)
+    into v_purchase_dn_taxable, v_purchase_dn_cgst, v_purchase_dn_sgst, v_purchase_dn_igst
+    from public.credit_notes
+    where company_id = v_company_id and type = 'purchase' and note_date between p_period_start and p_period_end;
+
+  insert into public.gst_returns (
+    company_id, period_start, period_end,
+    outward_taxable_value, outward_cgst, outward_sgst, outward_igst,
+    inward_taxable_value, inward_cgst, inward_sgst, inward_igst,
+    prepared_by
+  ) values (
+    v_company_id, p_period_start, p_period_end,
+    v_sales_taxable - v_sales_cn_taxable, v_sales_cgst - v_sales_cn_cgst,
+    v_sales_sgst - v_sales_cn_sgst, v_sales_igst - v_sales_cn_igst,
+    v_purchase_taxable - v_purchase_dn_taxable, v_purchase_cgst - v_purchase_dn_cgst,
+    v_purchase_sgst - v_purchase_dn_sgst, v_purchase_igst - v_purchase_dn_igst,
+    auth.uid()
+  ) returning * into v_return;
+
+  return v_return;
+end;
+$$;
+
+grant execute on function public.create_gst_return(date, date) to authenticated;
+
+-- Trusted internal helper — no authorization check, same reasoning as
+-- every other _xxx_core() function in this schema. Same variant as
+-- _finalize_bank_reconciliation_core(): the row already exists (in
+-- 'pending' status) by the time this runs, so it only flips status.
+create function public._finalize_gst_return_core(p_company_id uuid, p_gst_return_id uuid)
+returns public.gst_returns
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_return public.gst_returns;
+begin
+  select * into v_return from public.gst_returns where id = p_gst_return_id and company_id = p_company_id;
+  if not found then
+    raise exception 'GST return not found in your company.';
+  end if;
+
+  update public.gst_returns set status = 'approved', approved_at = now()
+    where id = p_gst_return_id
+    returning * into v_return;
+
+  return v_return;
+end;
+$$;
+
+create function public.submit_gst_return(p_gst_return_id uuid)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_return public.gst_returns;
+  v_chain jsonb;
+  v_amount numeric(14, 2);
+  v_request public.approval_requests;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
+    raise exception 'Not authorized to submit GST returns.';
+  end if;
+
+  select * into v_return from public.gst_returns where id = p_gst_return_id and company_id = v_company_id;
+  if not found then
+    raise exception 'GST return not found in your company.';
+  end if;
+  if v_return.status <> 'draft' then
+    raise exception 'Only a draft GST return can be submitted (current status: %).', v_return.status;
+  end if;
+
+  -- A magnitude for display/routing only — NOT a "net tax payable"
+  -- figure (see the header comment above); the raw outward/inward
+  -- breakdown stored on gst_returns is what a CA actually applies
+  -- set-off rules to.
+  v_amount := abs(v_return.outward_cgst + v_return.outward_sgst + v_return.outward_igst
+                  + v_return.inward_cgst + v_return.inward_sgst + v_return.inward_igst);
+
+  select approval_chain into v_chain
+    from public.approval_rules
+    where company_id = v_company_id and entity_type = 'gst_return' and min_amount <= v_amount
+    order by min_amount desc
+    limit 1;
+  v_chain := coalesce(v_chain, '[]'::jsonb);
+
+  update public.gst_returns set status = 'pending' where id = p_gst_return_id;
+
+  insert into public.approval_requests (
+    company_id, entity_type, requested_by, amount, payload, approval_chain, current_step, status
+  ) values (
+    v_company_id, 'gst_return', auth.uid(), v_amount,
+    jsonb_build_object('p_gst_return_id', p_gst_return_id),
+    v_chain, 0,
+    case when jsonb_array_length(v_chain) = 0 then 'approved' else 'pending' end
+  ) returning * into v_request;
+
+  if jsonb_array_length(v_chain) = 0 then
+    perform public._finalize_gst_return_core(v_company_id, p_gst_return_id);
+    update public.approval_requests set result_entity_id = p_gst_return_id
+      where id = v_request.id
+      returning * into v_request;
+  end if;
+
+  return v_request;
+end;
+$$;
+
+grant execute on function public.submit_gst_return(uuid) to authenticated;
+
+create function public.create_tds_return(p_period_start date, p_period_end date)
+returns public.tds_returns
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_return public.tds_returns;
+  v_total numeric(14, 2);
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
+    raise exception 'Not authorized to prepare TDS returns.';
+  end if;
+  if p_period_end < p_period_start then
+    raise exception 'Period end must be on or after period start.';
+  end if;
+
+  -- Mirrors tds_summary()'s own join/filter (Phase 32), scoped explicitly
+  -- to the caller's company for the same reason as create_gst_return()
+  -- above — this SECURITY DEFINER function bypasses RLS.
+  select coalesce(sum(t.tds_amount), 0) into v_total
+    from public.tds_transactions t
+    join public.payments p on p.id = t.payment_id
+    where t.company_id = v_company_id and p.payment_date between p_period_start and p_period_end;
+
+  insert into public.tds_returns (company_id, period_start, period_end, total_tds_amount, prepared_by)
+  values (v_company_id, p_period_start, p_period_end, v_total, auth.uid())
+  returning * into v_return;
+
+  return v_return;
+end;
+$$;
+
+grant execute on function public.create_tds_return(date, date) to authenticated;
+
+-- Trusted internal helper — same variant as _finalize_gst_return_core()
+-- above.
+create function public._finalize_tds_return_core(p_company_id uuid, p_tds_return_id uuid)
+returns public.tds_returns
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_return public.tds_returns;
+begin
+  select * into v_return from public.tds_returns where id = p_tds_return_id and company_id = p_company_id;
+  if not found then
+    raise exception 'TDS return not found in your company.';
+  end if;
+
+  update public.tds_returns set status = 'approved', approved_at = now()
+    where id = p_tds_return_id
+    returning * into v_return;
+
+  return v_return;
+end;
+$$;
+
+create function public.submit_tds_return(p_tds_return_id uuid)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_return public.tds_returns;
+  v_chain jsonb;
+  v_request public.approval_requests;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
+    raise exception 'Not authorized to submit TDS returns.';
+  end if;
+
+  select * into v_return from public.tds_returns where id = p_tds_return_id and company_id = v_company_id;
+  if not found then
+    raise exception 'TDS return not found in your company.';
+  end if;
+  if v_return.status <> 'draft' then
+    raise exception 'Only a draft TDS return can be submitted (current status: %).', v_return.status;
+  end if;
+
+  select approval_chain into v_chain
+    from public.approval_rules
+    where company_id = v_company_id and entity_type = 'tds_return' and min_amount <= v_return.total_tds_amount
+    order by min_amount desc
+    limit 1;
+  v_chain := coalesce(v_chain, '[]'::jsonb);
+
+  update public.tds_returns set status = 'pending' where id = p_tds_return_id;
+
+  insert into public.approval_requests (
+    company_id, entity_type, requested_by, amount, payload, approval_chain, current_step, status
+  ) values (
+    v_company_id, 'tds_return', auth.uid(), v_return.total_tds_amount,
+    jsonb_build_object('p_tds_return_id', p_tds_return_id),
+    v_chain, 0,
+    case when jsonb_array_length(v_chain) = 0 then 'approved' else 'pending' end
+  ) returning * into v_request;
+
+  if jsonb_array_length(v_chain) = 0 then
+    perform public._finalize_tds_return_core(v_company_id, p_tds_return_id);
+    update public.approval_requests set result_entity_id = p_tds_return_id
+      where id = v_request.id
+      returning * into v_request;
+  end if;
+
+  return v_request;
+end;
+$$;
+
+grant execute on function public.submit_tds_return(uuid) to authenticated;
+
+-- No free tier for either — see the header comment above.
+insert into public.approval_rules (company_id, entity_type, min_amount, approval_chain)
+select id, 'gst_return', 0, '["cfo", "ca_auditor"]'::jsonb from public.companies
+on conflict (company_id, entity_type, min_amount) do nothing;
+
+insert into public.approval_rules (company_id, entity_type, min_amount, approval_chain)
+select id, 'tds_return', 0, '["cfo", "ca_auditor"]'::jsonb from public.companies
+on conflict (company_id, entity_type, min_amount) do nothing;
+
+-- ============================================================
+-- Phase 55 — CA/Audit review loop
+-- Genuinely new, and unlike every module in Phases 40-54, NOT a gate on
+-- an existing function — approve_request()/reject_request() are
+-- untouched by this phase. Those modules all block a pending FINANCIAL
+-- ACTION until sign-off; this is the opposite shape: a CA (or an
+-- accountant who spots something odd) flags an ALREADY-POSTED record or
+-- a whole period for review, records findings as the investigation
+-- proceeds, and signs off when satisfied. Nothing is blocked or reversed
+-- by a flag — it's an audit trail layered alongside the ledger, not a
+-- control gate in front of it, per the spec's own framing of this as a
+-- review loop rather than an approval chain.
+--
+-- reference_type/reference_id deliberately mirror
+-- approval_requests.entity_type's own precedent: plain text, not a
+-- foreign key or a hardcoded enum, since it can point at any of a dozen+
+-- different tables (invoices, payments, expense claims, payroll runs,
+-- bank reconciliations, gst/tds returns, fixed assets, ...) and a real
+-- Postgres FK can't reference "whichever table this row names." The one
+-- special value is 'period' (reference_id null, period_start/end
+-- required instead) for flagging a date range as a whole rather than one
+-- specific record — enforced by audit_flags_reference_shape below, the
+-- one piece of real structural validation this phase needs. Beyond that
+-- shape check, this deliberately does NOT dispatch on reference_type to
+-- verify the referenced row actually exists in whichever table it names
+-- (the way approve_request() dispatches on entity_type to call the right
+-- _core() function) — unlike every approval-gated module, an audit flag
+-- has no amount, no journal entries, no compliance math; it's a note,
+-- not a financial calculation, so CLAUDE.md's "never cut corners"
+-- exceptions (financial calculations, ledger posting) don't apply here.
+-- Building a 13-branch existence-check switch for a metadata-only
+-- record would be exactly the kind of premature generalization the
+-- project's ponytail-minimalism rule warns against.
+create table public.audit_flags (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references public.companies (id),
+  reference_type text not null,
+  reference_id uuid,
+  period_start date,
+  period_end date,
+  reason text not null,
+  status text not null default 'open' check (status in ('open', 'resolved')),
+  flagged_by uuid not null references public.users (id),
+  resolved_by uuid references public.users (id),
+  resolved_at timestamptz,
+  resolution_note text,
+  created_at timestamptz not null default now(),
+  constraint audit_flags_reference_shape check (
+    (reference_type = 'period' and reference_id is null and period_start is not null and period_end is not null)
+    or (reference_type <> 'period' and reference_id is not null and period_start is null and period_end is null)
+  ),
+  constraint audit_flags_valid_period check (period_end is null or period_end >= period_start),
+  constraint audit_flags_resolved_consistency check ((status = 'resolved') = (resolved_at is not null))
+);
+
+alter table public.audit_flags enable row level security;
+
+create policy audit_flags_select on public.audit_flags
+  for select using (company_id = public.current_user_company_id());
+
+-- Append-only investigation notes against a flag — kept as their own
+-- rows (not a single growing text field) so multiple findings recorded
+-- over the course of a review each keep their own author and timestamp,
+-- same reasoning as approval_requests.decisions, just as a real child
+-- table instead of a jsonb array since there's no fixed-length chain to
+-- walk here — just an open-ended list.
+create table public.audit_findings (
+  id uuid primary key default gen_random_uuid(),
+  audit_flag_id uuid not null references public.audit_flags (id),
+  finding text not null,
+  recorded_by uuid not null references public.users (id),
+  created_at timestamptz not null default now()
+);
+
+alter table public.audit_findings enable row level security;
+
+create policy audit_findings_select on public.audit_findings
+  for select using (
+    exists (
+      select 1 from public.audit_flags af
+      where af.id = audit_findings.audit_flag_id and af.company_id = public.current_user_company_id()
+    )
+  );
+
+-- Deliberately broader than add_audit_finding()/resolve_audit_flag()
+-- below: admin/accountant OR a ca_auditor app-role holder can raise a
+-- flag (an accountant noticing something odd should be able to flag it
+-- for the CA's attention, not only the CA themselves), but only a
+-- ca_auditor (or admin, the same superuser-override precedent used
+-- throughout this schema) can record findings or sign off — that
+-- narrower authority is specifically the CA's job per the spec.
+create function public.flag_for_audit(
+  p_reference_type text,
+  p_reference_id uuid,
+  p_period_start date,
+  p_period_end date,
+  p_reason text
+)
+returns public.audit_flags
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_flag public.audit_flags;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or (
+    not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
+    and not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'ca_auditor')
+  ) then
+    raise exception 'Not authorized to flag items for audit.';
+  end if;
+  if p_reason is null or length(trim(p_reason)) = 0 then
+    raise exception 'A reason is required to flag something for audit.';
+  end if;
+
+  if p_reference_type = 'period' then
+    if p_reference_id is not null then
+      raise exception 'A period flag has no reference_id — use p_period_start/p_period_end instead.';
+    end if;
+    if p_period_start is null or p_period_end is null then
+      raise exception 'period_start and period_end are required when flagging a period.';
+    end if;
+  else
+    if p_reference_id is null then
+      raise exception 'reference_id is required when flagging a specific record.';
+    end if;
+    if p_period_start is not null or p_period_end is not null then
+      raise exception 'period_start/period_end only apply when reference_type is ''period''.';
+    end if;
+  end if;
+
+  insert into public.audit_flags (
+    company_id, reference_type, reference_id, period_start, period_end, reason, flagged_by
+  ) values (
+    v_company_id, p_reference_type, p_reference_id, p_period_start, p_period_end, p_reason, auth.uid()
+  ) returning * into v_flag;
+
+  return v_flag;
+end;
+$$;
+
+grant execute on function public.flag_for_audit(text, uuid, date, date, text) to authenticated;
+
+create function public.add_audit_finding(p_audit_flag_id uuid, p_finding text)
+returns public.audit_findings
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_flag public.audit_flags;
+  v_finding public.audit_findings;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or (
+    not public.current_user_is_admin()
+    and not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'ca_auditor')
+  ) then
+    raise exception 'Not authorized to record audit findings.';
+  end if;
+
+  select * into v_flag from public.audit_flags where id = p_audit_flag_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Audit flag not found in your company.';
+  end if;
+  if v_flag.status <> 'open' then
+    raise exception 'Cannot add findings to a % audit flag.', v_flag.status;
+  end if;
+  if p_finding is null or length(trim(p_finding)) = 0 then
+    raise exception 'Finding text cannot be empty.';
+  end if;
+
+  insert into public.audit_findings (audit_flag_id, finding, recorded_by)
+  values (p_audit_flag_id, p_finding, auth.uid())
+  returning * into v_finding;
+
+  return v_finding;
+end;
+$$;
+
+grant execute on function public.add_audit_finding(uuid, text) to authenticated;
+
+create function public.resolve_audit_flag(p_audit_flag_id uuid, p_resolution_note text)
+returns public.audit_flags
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_flag public.audit_flags;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or (
+    not public.current_user_is_admin()
+    and not exists (select 1 from public.user_app_roles where user_id = auth.uid() and app_role = 'ca_auditor')
+  ) then
+    raise exception 'Not authorized to resolve audit flags.';
+  end if;
+
+  select * into v_flag from public.audit_flags where id = p_audit_flag_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Audit flag not found in your company.';
+  end if;
+  if v_flag.status <> 'open' then
+    raise exception 'This audit flag is already %.', v_flag.status;
+  end if;
+  if p_resolution_note is null or length(trim(p_resolution_note)) = 0 then
+    raise exception 'A resolution note is required to sign off an audit flag.';
+  end if;
+
+  update public.audit_flags
+    set status = 'resolved', resolved_by = auth.uid(), resolved_at = now(), resolution_note = p_resolution_note
+    where id = p_audit_flag_id
+    returning * into v_flag;
+
+  return v_flag;
+end;
+$$;
+
+grant execute on function public.resolve_audit_flag(uuid, text) to authenticated;
+
+-- ============================================================
+-- Phase 57 — Approval Workflows, fifteenth module: Inter-Branch Stock
+-- Transfer
+-- Built on Phase 56's warehouse-scoping foundation: consume_item_fefo()'s
+-- p_warehouse_id/p_to_warehouse_id parameters do the actual "move" (FEFO
+-- consumption at the source, scoped to that warehouse only — proving the
+-- warehouse-scoped balance check for real, not just as a label — mirrored
+-- into a new batch at the destination). This function layer is genuinely
+-- new (stock_transfers didn't exist before this phase), but the "move"
+-- mechanic it calls was deliberately built into Phase 56, not duplicated
+-- here as a second FEFO loop.
+--
+-- Threshold basis: QUANTITY transferred, not value — same reasoning as
+-- wastage/production (cost is only known once consume_item_fefo() runs).
+-- Keeps a free auto-post tier at 0 (like production/bank reconciliation,
+-- not credit-notes/purchase-requests) — routine inter-branch movement is
+-- not an exception-driven document. Seeded: 0 -> no approval, 500+ units
+-- -> COO. Placeholder default, not compliance-blessed — edit via Roles &
+-- Permissions.
+-- ============================================================
+create function public._post_stock_transfer_core(
+  p_company_id uuid,
+  p_item_id uuid,
+  p_quantity numeric,
+  p_from_warehouse_id uuid,
+  p_to_warehouse_id uuid,
+  p_transfer_date date,
+  p_requested_by uuid
+)
+returns public.stock_transfers
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_item record;
+  v_transfer_id uuid := gen_random_uuid();
+  v_transfer public.stock_transfers;
+begin
+  if p_from_warehouse_id = p_to_warehouse_id then
+    raise exception 'Source and destination warehouse must differ.';
+  end if;
+  if not exists (select 1 from public.warehouses where id = p_from_warehouse_id and company_id = p_company_id) then
+    raise exception 'Source warehouse not found in your company.';
+  end if;
+  if not exists (select 1 from public.warehouses where id = p_to_warehouse_id and company_id = p_company_id) then
+    raise exception 'Destination warehouse not found in your company.';
+  end if;
+
+  select type into v_item from public.items where id = p_item_id and company_id = p_company_id;
+  if not found or v_item.type <> 'good' then
+    raise exception 'Item % not found in your company, or not a stocked good.', p_item_id;
+  end if;
+
+  -- consume_item_fefo()'s p_to_warehouse_id mode (Phase 56) does the
+  -- actual move: consumes FEFO from the source warehouse only (raises
+  -- "insufficient stock" if that specific warehouse doesn't have enough
+  -- — the whole point of Phase 56) and mirrors each consumed slice into
+  -- a new batch at the destination, tagging both legs' stock_ledger rows
+  -- with reference_type='stock_transfer'/reference_id=v_transfer_id —
+  -- this row's own id, generated up front so both legs can be tagged
+  -- with it before the row itself is inserted, same pattern this schema
+  -- already uses for entry_group_id elsewhere.
+  perform public.consume_item_fefo(
+    p_company_id, p_item_id, p_quantity, 'stock_transfer', v_transfer_id, p_transfer_date,
+    p_from_warehouse_id, p_to_warehouse_id
+  );
+
+  insert into public.stock_transfers (
+    id, company_id, item_id, quantity, from_warehouse_id, to_warehouse_id, transfer_date, requested_by
+  ) values (
+    v_transfer_id, p_company_id, p_item_id, p_quantity, p_from_warehouse_id, p_to_warehouse_id, p_transfer_date,
+    p_requested_by
+  ) returning * into v_transfer;
+
+  return v_transfer;
+end;
+$$;
+
+create function public.submit_stock_transfer(
+  p_item_id uuid,
+  p_quantity numeric,
+  p_from_warehouse_id uuid,
+  p_to_warehouse_id uuid,
+  p_transfer_date date
+)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_chain jsonb;
+  v_request public.approval_requests;
+  v_transfer public.stock_transfers;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or (
+    not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write'))
+    and not public.current_user_has_permission('stock_transfer.create')
+  ) then
+    raise exception 'Not authorized to request a stock transfer.';
+  end if;
+
+  select approval_chain into v_chain
+    from public.approval_rules
+    where company_id = v_company_id and entity_type = 'stock_transfer' and min_amount <= p_quantity
+    order by min_amount desc
+    limit 1;
+  v_chain := coalesce(v_chain, '[]'::jsonb);
+
+  insert into public.approval_requests (
+    company_id, entity_type, requested_by, amount, payload, approval_chain, current_step, status
+  ) values (
+    v_company_id, 'stock_transfer', auth.uid(), p_quantity,
+    jsonb_build_object(
+      'p_item_id', p_item_id, 'p_quantity', p_quantity,
+      'p_from_warehouse_id', p_from_warehouse_id, 'p_to_warehouse_id', p_to_warehouse_id,
+      'p_transfer_date', p_transfer_date
+    ),
+    v_chain, 0,
+    case when jsonb_array_length(v_chain) = 0 then 'approved' else 'pending' end
+  ) returning * into v_request;
+
+  if jsonb_array_length(v_chain) = 0 then
+    v_transfer := public._post_stock_transfer_core(
+      v_company_id, p_item_id, p_quantity, p_from_warehouse_id, p_to_warehouse_id, p_transfer_date, auth.uid()
+    );
+    update public.approval_requests set result_entity_id = v_transfer.id
+      where id = v_request.id
+      returning * into v_request;
+  end if;
+
+  return v_request;
+end;
+$$;
+
+grant execute on function public.submit_stock_transfer(uuid, numeric, uuid, uuid, date) to authenticated;
+
+-- Blind reference-based reversal, same as cancel_invoice()/
+-- cancel_wastage(): replay every stock_ledger row this transfer created
+-- (both the source 'out' leg and the destination 'in' leg
+-- consume_item_fefo()'s mirroring created) with direction flipped,
+-- warehouse_id carried forward — the source-side batch(es) get their
+-- quantity reinstated, the destination-side batch(es) this transfer
+-- created get consumed back down. A distinct reference_type
+-- ('stock_transfer_cancellation'), same convention as
+-- invoice_cancellation/wastage_cancellation.
+create function public.cancel_stock_transfer(p_transfer_id uuid)
+returns public.stock_transfers
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_company_id uuid;
+  v_transfer public.stock_transfers;
+  v_leg record;
+begin
+  v_company_id := public.current_user_company_id();
+  if v_company_id is null or not (public.current_user_is_admin() or public.current_user_has_permission('ledger.write')) then
+    raise exception 'Not authorized to cancel stock transfers.';
+  end if;
+
+  select * into v_transfer from public.stock_transfers where id = p_transfer_id and company_id = v_company_id;
+  if not found then
+    raise exception 'Stock transfer not found in your company.';
+  end if;
+  if v_transfer.status <> 'posted' then
+    raise exception 'Only a posted stock transfer can be cancelled (current status: %).', v_transfer.status;
+  end if;
+
+  for v_leg in
+    select item_id, batch_id, warehouse_id, quantity, direction from public.stock_ledger
+    where reference_type = 'stock_transfer' and reference_id = v_transfer.id
+  loop
+    insert into public.stock_ledger (company_id, item_id, batch_id, warehouse_id, reference_type, reference_id, quantity, direction, movement_date)
+    values (
+      v_company_id, v_leg.item_id, v_leg.batch_id, v_leg.warehouse_id, 'stock_transfer_cancellation', v_transfer.id,
+      v_leg.quantity,
+      case when v_leg.direction = 'in' then 'out' else 'in' end,
+      current_date
+    );
+  end loop;
+
+  update public.stock_transfers set status = 'cancelled' where id = p_transfer_id returning * into v_transfer;
+
+  return v_transfer;
+end;
+$$;
+
+grant execute on function public.cancel_stock_transfer(uuid) to authenticated;
+
+-- inventory_manager can create a stock transfer request, same precedent
+-- as Phase 51's purchase_request.create/Phase 52's production.create — a
+-- precisely-named permission, not overloading an existing one.
+insert into public.role_permissions (app_role, permission_key) values
+  ('inventory_manager', 'stock_transfer.create')
+on conflict (app_role, permission_key) do nothing;
+
+insert into public.approval_rules (company_id, entity_type, min_amount, approval_chain)
+select id, 'stock_transfer', 0, '[]'::jsonb from public.companies
+union all
+select id, 'stock_transfer', 500, '["coo"]'::jsonb from public.companies
+on conflict (company_id, entity_type, min_amount) do nothing;
+
+-- ============================================================
+-- Phase 59 — Role System Unification, foundation
+-- First step of retiring users.role (the original 3-value admin/
+-- accountant/viewer enum) in favor of user_app_roles + role_permissions
+-- (Phase 38's business-role system), at the user's explicit request after
+-- being shown the real scope: 149 current_user_role() call sites in this
+-- file, 50 profile.role checks across 46 frontend files.
+--
+-- is_admin is the one piece that CANNOT simply become "holds an
+-- app_role" — 'admin' has no equivalent among the 13 named business
+-- roles (ceo/cfo/coo/cmo/cto/accountant/ca_auditor/hr_payroll/
+-- kitchen_manager/inventory_manager/project_manager/employee/viewer);
+-- it's a superuser/IT concept, not a business one. More importantly:
+-- assign_user_role()/revoke_user_role() (the only way to grant someone
+-- their first app_role) both require current_user_can_manage_users(),
+-- which requires already being admin. Deleting the admin concept
+-- outright, with nothing to replace it, would mean the first user of a
+-- brand-new company could never be granted ANY role at all — a hard
+-- bootstrap deadlock. is_admin is that replacement: a standalone
+-- superuser bypass, separate from the 13-role business enum.
+--
+-- role/can_manage_users are deliberately NOT dropped yet — this phase is
+-- pure addition, changing no existing behavior. Every later phase in
+-- this migration can be tested with an instant rollback path (every old
+-- check still there, unused) until the final cutover phase drops them.
+alter table public.users add column is_admin boolean not null default false;
+
+-- Backfill: is_admin exactly mirrors role = 'admin' for every existing
+-- user — a faithful snapshot of today's authority, not a judgment call.
+update public.users set is_admin = (role = 'admin');
+
+-- Mirrors current_user_role()'s own shape/security posture exactly.
+create function public.current_user_is_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select is_admin from public.users where id = auth.uid();
+$$;
+
+grant execute on function public.current_user_is_admin() to authenticated;
+
+-- ledger.write: the single new permission key that replaces every
+-- "current_user_role() in ('admin','accountant')" / "<> 'viewer'" check
+-- across the schema (proven logically equivalent in the accompanying
+-- plan — 'viewer' was the only other value, so "not viewer" and
+-- "admin-or-accountant" were always the same condition). Seeded to
+-- 'accountant' only, per explicit choice — not broadened to the C-suite
+-- roles — so this is an exact 1:1 mirror of today's behavior, not a
+-- capability change. is_admin is checked separately alongside this key
+-- everywhere it's used (current_user_is_admin() or
+-- current_user_has_permission('ledger.write')), never folded into the
+-- permission grant itself, since is_admin must always bypass regardless
+-- of any role_permissions row existing.
+insert into public.role_permissions (app_role, permission_key) values
+  ('accountant', 'ledger.write')
+on conflict (app_role, permission_key) do nothing;
+
+-- Phase 60: data-migration counterpart to the behavior migration below —
+-- every existing role='accountant' user gets the app_role 'accountant'
+-- backfilled, so they keep exactly the write access they have today the
+-- moment the checks below start consulting current_user_has_permission
+-- ('ledger.write') instead of role. Without this, a real accountant who'd
+-- never been touched by the Roles & Permissions UI would be silently
+-- locked out. Skipped for a user with no company_id (shouldn't exist,
+-- but user_app_roles.company_id is not null).
+insert into public.user_app_roles (company_id, user_id, app_role)
+select company_id, id, 'accountant'
+from public.users
+where role = 'accountant' and company_id is not null
+on conflict (user_id, app_role) do nothing;

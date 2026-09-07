@@ -4,9 +4,20 @@ import { emailToUsername } from '../config/auth'
 
 const AuthContext = createContext(null)
 
-// profile = the public.users row (role, company_id) for the signed-in user.
-// It's created automatically by the on_auth_user_created DB trigger, so we
-// just need to fetch it once we have a session.
+// profile = the public.users row (company_id, is_admin, can_manage_users)
+// plus app_roles (from user_app_roles) for the signed-in user. The users
+// row is created automatically by the on_auth_user_created DB trigger,
+// so we just need to fetch it once we have a session.
+//
+// is_admin (the superuser bypass) and app_roles (named business roles —
+// accountant, cfo, kitchen_manager, ...) are the whole authorization
+// model now (Phase 59-63) — every RLS policy and RPC in the schema
+// checks current_user_is_admin()/current_user_has_permission(), never a
+// role enum (that column/type was dropped in Phase 63). Fetching
+// app_roles here once, centrally, replaces the separate per-page
+// `user_app_roles` query several pages (Approvals.jsx, AuditReview.jsx,
+// etc.) used to run into their own local `myRoles` state — those now
+// just read profile.app_roles directly.
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(null)
   const [profile, setProfile] = useState(null)
@@ -17,17 +28,20 @@ export function AuthProvider({ children }) {
       setProfile(null)
       return
     }
-    const { data, error } = await supabase
-      .from('users')
-      .select('id, company_id, full_name, role, can_manage_users')
-      .eq('id', userId)
-      .single()
+    const [{ data, error }, { data: appRoleRows }] = await Promise.all([
+      supabase
+        .from('users')
+        .select('id, company_id, full_name, can_manage_users, is_admin')
+        .eq('id', userId)
+        .single(),
+      supabase.from('user_app_roles').select('app_role').eq('user_id', userId),
+    ])
     if (error) {
       console.error('Failed to load user profile', error)
       setProfile(null)
       return
     }
-    setProfile(data)
+    setProfile({ ...data, app_roles: (appRoleRows ?? []).map((r) => r.app_role) })
   }, [])
 
   useEffect(() => {

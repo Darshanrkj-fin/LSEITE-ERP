@@ -10,7 +10,7 @@ const LABELS = {
 
 export function InvoiceList({ type, basePath }) {
   const { profile } = useAuth()
-  const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
   const labels = LABELS[type]
 
   const [invoices, setInvoices] = useState([])

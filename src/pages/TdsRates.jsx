@@ -9,7 +9,7 @@ export function TdsRates() {
   // Matches the tds_rates_write/update/delete RLS policies: admin only,
   // not accountant — rate changes are reviewed manually, never auto-applied
   // (same reasoning as TaxRates.jsx).
-  const canEdit = profile?.role === 'admin'
+  const canEdit = profile?.is_admin
 
   const [rates, setRates] = useState([])
   const [loading, setLoading] = useState(true)

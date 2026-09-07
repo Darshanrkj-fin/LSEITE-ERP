@@ -13,6 +13,7 @@ const navGroups = [
     label: 'Setup',
     items: [
       { to: '/company', label: 'Company Profile' },
+      { to: '/branches', label: 'Branches & Warehouses' },
       { to: '/chart-of-accounts', label: 'Chart of Accounts' },
       { to: '/tax-rates', label: 'Tax Rates' },
       { to: '/tds-rates', label: 'TDS Rates' },
@@ -53,10 +54,12 @@ const navGroups = [
   {
     label: 'Purchases & Banking',
     items: [
+      { to: '/purchase-requests', label: 'Purchase Requests' },
       { to: '/purchase-invoices', label: 'Purchase Invoices' },
       { to: '/bank-accounts', label: 'Bank Accounts' },
       { to: '/bank-transactions', label: 'Bank Transactions' },
       { to: '/reconciliation', label: 'Reconciliation' },
+      { to: '/stock-transfers', label: 'Stock Transfers' },
     ],
   },
   {
@@ -66,6 +69,7 @@ const navGroups = [
       { to: '/fixed-assets', label: 'Fixed Assets' },
       { to: '/depreciation-runs', label: 'Depreciation Runs' },
       { to: '/approvals', label: 'Approvals' },
+      { to: '/audit-review', label: 'Audit Review' },
     ],
   },
   {
@@ -169,8 +173,8 @@ export function Layout() {
     .map((group) => ({
       ...group,
       items: group.items.filter((item) => {
-        if (item.requiresManageUsers) return profile?.role === 'admin' && profile?.can_manage_users
-        if (item.requiresAdmin) return profile?.role === 'admin'
+        if (item.requiresManageUsers) return profile?.is_admin && profile?.can_manage_users
+        if (item.requiresAdmin) return profile?.is_admin
         return true
       }),
     }))
@@ -258,7 +262,9 @@ export function Layout() {
       <div className="flex flex-1 flex-col">
         <header className="flex items-center justify-between border-b border-line px-6 py-3">
           <span className="text-sm text-muted">
-            Signed in as {username ?? '…'} ({profile?.role ?? '…'})
+            Signed in as {username ?? '…'} (
+            {profile?.is_admin ? 'Admin' : profile?.app_roles?.length ? profile.app_roles.join(', ') : 'no roles assigned'}
+            )
           </span>
           <div className="flex items-center gap-2">
             <NotificationBell />

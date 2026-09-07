@@ -12,7 +12,7 @@ const maskAccountNumber = (num) => (num && num.length > 4 ? `••••${num.s
 // name/number to pick from instead of a generic ledger account name.
 export function BankAccounts() {
   const { profile } = useAuth()
-  const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
 
   const [accounts, setAccounts] = useState([])
   const [coaOptions, setCoaOptions] = useState([])

@@ -4,11 +4,11 @@ import { useAuth } from '../context/AuthContext'
 
 export function AccessRequests() {
   const { profile } = useAuth()
-  const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
+  const canRevoke = canEdit || profile?.app_roles?.includes('cto')
 
   const [employees, setEmployees] = useState([])
   const [grants, setGrants] = useState([])
-  const [myRoles, setMyRoles] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [info, setInfo] = useState(null)
@@ -20,22 +20,18 @@ export function AccessRequests() {
   const [accessLevel, setAccessLevel] = useState('read')
   const [reason, setReason] = useState('')
 
-  const canRevoke = profile?.role === 'admin' || profile?.role === 'accountant' || myRoles.includes('cto')
-
   const load = async () => {
     setLoading(true)
-    const [{ data: emps }, { data: grantRows, error: fetchError }, { data: roleRows }] = await Promise.all([
+    const [{ data: emps }, { data: grantRows, error: fetchError }] = await Promise.all([
       supabase.from('employees').select('id, name').eq('status', 'active').order('name'),
       supabase
         .from('access_grants')
         .select('*, employees(name)')
         .order('granted_at', { ascending: false }),
-      supabase.from('user_app_roles').select('app_role').eq('user_id', profile.id),
     ])
     setEmployees(emps ?? [])
     if (fetchError) setError(fetchError.message)
     else setGrants(grantRows ?? [])
-    setMyRoles((roleRows ?? []).map((r) => r.app_role))
     setLoading(false)
   }
 

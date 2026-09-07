@@ -20,7 +20,7 @@ const COLUMNS = [
 
 export function FixedAssets() {
   const { profile } = useAuth()
-  const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
 
   const [assets, setAssets] = useState([])
   const [categories, setCategories] = useState([])

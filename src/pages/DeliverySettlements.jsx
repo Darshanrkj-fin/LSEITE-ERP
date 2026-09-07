@@ -9,7 +9,7 @@ const today = () => new Date().toISOString().slice(0, 10)
 // against a real Swiggy/Zomato payout statement — see ROADMAP.md Phase 30.
 export function DeliverySettlements() {
   const { profile } = useAuth()
-  const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
 
   const [platforms, setPlatforms] = useState([])
   const [newPlatformName, setNewPlatformName] = useState('')

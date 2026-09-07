@@ -8,7 +8,7 @@ import { useAuth } from '../context/AuthContext'
 // public.attachments is just the queryable metadata row for each one.
 export function AttachmentsSection({ entityType, entityId }) {
   const { profile } = useAuth()
-  const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
 
   const [attachments, setAttachments] = useState([])
   const [loading, setLoading] = useState(true)

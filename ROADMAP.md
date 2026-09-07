@@ -1338,10 +1338,658 @@ own phased initiative rather than one change, exactly like that mapping was.
 
 Seven modules now have real, working approval workflows (fixed asset capitalization, payroll runs,
 purchase invoices, wastage, project/consulting invoicing, expense claims, technology access requests).
-What remains from the original spec — marketing spend (no campaigns module exists in this app at all)
-and the CA/Audit review loop (a genuinely new review/findings feature, not a gate on an existing
-function) — still posts immediately or has no workflow at all; extending further is future work, not
-yet scheduled.
+
+**Audit against a second, more detailed spec (2026-09-06)**: the user supplied a much more detailed
+32-section standardized-actions/scope/approval design (VIEW/CREATE/EDIT/SUBMIT/APPROVE/REJECT/POST/
+REVERSE/CANCEL/EXPORT/CONFIGURE as the action vocabulary; ALL_BUSINESS/BUSINESS_UNIT/BRANCH/
+DEPARTMENT/PROJECT/OWN_RECORDS as scope; a full per-module approval-hierarchy table; separation of
+duties; dynamic role creation). Checking it against the actual schema (not memory) surfaced real gaps
+— some are missing features, but two are actual bugs in what's already claimed to work today:
+
+- **`role_permissions`/`current_user_has_permission()` is pure bookkeeping — confirmed by grep that no
+  business logic anywhere calls it.** The permission matrix UI lets you edit rows that do nothing.
+- **A real functional bug**: `role_permissions` grants `project_manager → timesheets.approve`, but
+  `timesheets_update`'s RLS policy is still admin/accountant-only — a pure Project Manager (not also an
+  old-system admin/accountant) cannot actually approve a timesheet today, despite the permission row
+  saying they can.
+- **No separation-of-duties check** — `approve_request()`/`reject_request()` never compare
+  `requested_by` to the approver; someone holding both the submitting and approving role can approve
+  their own request.
+- Reversal/cancellation exists for invoices (+ auto full-value credit/debit notes), payments, and fixed
+  asset disposal, and revocation for access grants — but not for payroll runs, wastage, or expense
+  claims.
+- No `discount` field exists anywhere on invoice lines, so section 6's discount-threshold approval has
+  no data to gate on. Credit/debit notes are auto-generated, full-value only, as a byproduct of
+  `cancel_invoice()` — not the standalone create/submit/approve/post workflow section 7 describes.
+  There is no `purchase_requests`/`purchase_orders` staging ahead of purchase invoices (section 8).
+  `post_production_entry()` (Phase 9's manufacturing entry) is ungated. Banking reconciliation, GST/TDS
+  prepare-approve-review, and the CA/Audit review loop (sections 19-21) don't exist as workflows.
+
+**Planned closure, in priority order (highest-value/lowest-risk first)**:
+- **Phase 47 — Permission Enforcement & Separation of Duties. ✅ Done — see retrospective below.**
+- **Phase 48 — Reversal completeness. ✅ Done — see retrospective below.**
+- **Phase 49 — Sales discount-threshold approval. ✅ Done — see retrospective below.**
+- **Phase 50 — Manual Credit/Debit Note workflow. ✅ Done — see retrospective below.**
+- **Phase 51 — Purchase Request → Purchase Order chain. ✅ Done — see retrospective below.**
+- **Phase 52 — Production approval. ✅ Done — see retrospective below.**
+- **Phase 53 — Banking reconciliation approval. ✅ Done — see retrospective below.**
+- **Phase 54 — GST/TDS approval workflow. ✅ Done — see retrospective below.**
+- **Phase 55 — CA/Audit review loop. ✅ Done — see retrospective below. This closes the full gap-closure
+  backlog opened by the 32-section spec audit.**
+- **Phases 56-57 — Warehouse-aware stock + inter-branch stock transfer approval. ✅ Done — see
+  retrospective below.** Revisits one item from the "deliberately flagged, not scheduled" list below at
+  the user's explicit request — building it surfaced a real prerequisite gap (per-warehouse stock was
+  never actually tracked anywhere), so it became two phases, not one.
+- **Phases 59-63 — Role System Unification: retire `users.role` in favor of `user_app_roles`. ✅ Done —
+  see retrospective below.** A user-initiated architectural cleanup (not part of the original spec audit
+  backlog) merging the two parallel role systems this app had accumulated over the whole RBAC initiative.
+
+### Phase 47 — Permission Enforcement & Separation of Duties ✅
+- **Separation of duties**: `approve_request()`/`reject_request()` now both check `requested_by <>
+  auth.uid()` before doing anything else, and raise a clear error ("You cannot approve/reject your own
+  request.") if the caller submitted the request themselves — even if they separately hold the
+  required approval role. Applied identically to both functions.
+- **The timesheet-approval gap**: `role_permissions` already granted `project_manager ->
+  timesheets.approve`, but `timesheets_update`'s RLS policy was admin/accountant-only, so a pure
+  Project Manager couldn't act on it. Fixed with a new `set_timesheet_approval(p_timesheet_id,
+  p_status)` — a narrow SECURITY DEFINER RPC that touches only `approval_status`, gated to
+  admin/accountant OR (`current_user_has_permission('timesheets.approve')` AND the caller's linked
+  employee is that specific project's `project_manager_employee_id`). Chose a dedicated function over
+  loosening the RLS policy outright, since Postgres RLS can't restrict an `UPDATE` to one column on its
+  own — this app's established pattern for "needs an authority check beyond raw RLS" is always a
+  dedicated function. `ProjectDetail.jsx` now calls this RPC instead of a raw table update, and shows
+  the Approve/Reject buttons to a qualifying scoped PM too, not just admin/accountant.
+- **`current_user_has_permission()`'s first real caller**: `submit_payroll_run()`'s gate now also
+  accepts `current_user_has_permission('payroll.prepare')` — a permission Phase 38's seed already
+  granted to `hr_payroll` but nothing had ever checked. Purely additive; the existing admin/accountant
+  path is completely unchanged.
+- Tested live end-to-end, three groups: **(1) separation of duties** — confirmed a user holding both
+  the submitting role (accountant) and the required approving app-role (`coo`) is blocked from
+  approving or rejecting their own ₹55,000-₹60,000 fixed-asset-capitalization requests with the exact
+  new error message, while a genuinely different COO/CFO completes the same multi-step chain
+  normally (regression); **(2) payroll permission enforcement** — confirmed an HR/Payroll test user
+  (old `users.role='viewer'`, no admin/accountant) successfully submits a ₹150,000 payroll run (above
+  the ₹100,000 threshold, correctly resolves to `["cfo"]`), confirmed a plain `employee` app-role holder
+  still cannot, and confirmed the CFO's approval posts it correctly; **(3) timesheet approval scoping**
+  — confirmed the Project Manager assigned to Project A can approve its timesheet, confirmed a
+  *different* PM (assigned to Project B) cannot touch it, confirmed a plain `employee` app-role holder
+  cannot either, confirmed admin/accountant retains full access (regression), and confirmed an invalid
+  status string is rejected. One test-script mistake caught along the way: my own reject-path test
+  initially used the CFO to reject a request still sitting at its `coo` step — correctly rejected by
+  the existing "you don't hold the required role" check, not a defect; fixed the test to use the
+  genuine COO instead. Full cleanup afterward, including a two-step FK dependency I hadn't hit before
+  (`asset_transactions` references `fixed_assets`, which references `asset_categories` — deleted in that
+  order); `trial_balance()` confirmed 0=0; `approval_rules` count confirmed unchanged at 28 (this phase
+  added no new rules, only enforcement).
+
+### Phase 48 — Reversal Completeness ✅
+- `reverse_payroll_run()`, `cancel_wastage()`, `cancel_expense_claim()` — the same immutable-original/
+  reversing-entry pattern `cancel_invoice()`/`cancel_payment()`/`dispose_fixed_asset()` already
+  established, extended to the three modules that never had it. None of `payroll_runs`/`wastage`/
+  `expense_claims` had a status column before this phase; each got one (`posted`/`reversed` or
+  `posted`/`cancelled`) added in place at its original table definition. `payroll_runs`' old plain
+  unique constraint on `(company_id, employee_id, run_month)` became a partial index scoped to
+  `status='posted'`, so a corrected re-run is possible for the same employee+month after a reversal.
+  `cancel_wastage()` also reverses the exact `stock_ledger` rows `consume_item_fefo()` created (same
+  batch, opposite direction) — a blind reference-based reversal, not a fresh FEFO allocation, matching
+  `cancel_invoice()`'s own stock-ledger reversal precedent.
+- **A real fix, not just confirmation**: project/consulting invoices already reuse `cancel_invoice()`
+  since they post through the same `invoices` table, but cancelling one used to leave its billed
+  timesheets permanently pointing at a cancelled invoice (`timesheets.invoice_id` was never cleared) —
+  they could never be invoiced again. `cancel_invoice()` now nulls `timesheets.invoice_id` for the
+  cancelled invoice; harmless no-op for every other invoice type, since only project invoicing ever
+  sets that column.
+- **A real bug caught by live-testing, not by inspection**: `_post_payroll_run_core()`'s own duplicate-
+  run guard (`payroll has already been run for this employee this month`) checked for ANY existing row
+  for that employee+month, not just `status='posted'` ones — so a reversed run permanently blocked any
+  corrected re-run, defeating the entire point of `reverse_payroll_run()`. Caught mid-test-suite when a
+  legitimate corrected re-run failed with that exact message; fixed by scoping the guard to
+  `status='posted'`, matching the new partial unique index's own intent. Shipped as a small standalone
+  hotfix once the first handoff file had already been run, since the bug was only in application logic,
+  not the schema/index change itself.
+- Tested live end-to-end, four groups: **(1) payroll** — posted a run, confirmed a second run for the
+  same employee+month is blocked, reversed it (mirror-image journal legs hand-verified: salary expense
+  debited ₹50,000 originally, credited ₹50,000 in the reversal), confirmed double-reversal is rejected,
+  confirmed a corrected re-run (₹55,000) now succeeds for that same employee+month, confirmed a THIRD
+  run is still correctly blocked once an active posted run exists again; **(2) wastage** — posted a
+  30kg wastage entry against a 100kg batch (cost ₹300 at ₹10/kg), cancelled it, confirmed the stock
+  ledger shows the full 100kg restored and the reversal journal balances at ₹300, confirmed double-
+  cancellation is rejected, confirmed a fresh 90kg wastage entry can consume the restored stock via
+  FEFO again (cost ₹900); **(3) expense claims** — posted and cancelled a ₹1,200 claim, confirmed the
+  reversal journal balances, confirmed double-cancellation is rejected; **(4) project invoice
+  cancellation** — posted a project invoice from an approved timesheet, confirmed the timesheet linked
+  to it, cancelled the invoice, confirmed the timesheet's `invoice_id` was cleared, confirmed the same
+  timesheet could be invoiced again successfully. Full cleanup afterward (including a FK-ordering
+  lesson: timesheets must be unlinked/deleted before their invoice, and invoices before the party/
+  account they reference); `trial_balance()` confirmed 0=0 throughout.
+
+### Phase 49 — Approval Workflows, eighth module: Sales Invoice Discounts ✅
+- Matches the spec's Sales chain (section 6): routine sales post immediately; a discount above a
+  configured threshold needs Manager/CMO/COO approval. Required a real schema addition — no discount
+  concept existed anywhere before this phase. Added `discount_pct`/`discount_amount` to `invoices`
+  (header-level, not per-line); `_post_invoice_core()` applies the discount to each line's taxable
+  value *before* computing GST, so every downstream figure (subtotal, grand total, the revenue journal
+  leg) already reflects the discounted amount with no other change needed anywhere else in the
+  function. GST is charged on the post-discount value — correct under GST law provided the discount is
+  known at/before the time of supply and recorded on the invoice itself, which this is; **flagged for
+  CA confirmation regardless, per CLAUDE.md's compliance-judgment rule.**
+- **Sales-only, explicitly guarded**: a purchase invoice submitted with a nonzero discount is rejected
+  outright (`Discounts are only supported on sales invoices.`) — a purchase-side "discount" isn't a
+  modeled concept here (that would be a vendor-negotiated price reduction, a different thing).
+- Same core+wrapper split as every module in Phases 40-48: `_post_invoice_core()`/`post_invoice()` both
+  extended in place with a new trailing `p_discount_pct` parameter (verified safe beforehand — every
+  existing internal caller passes positional args that still resolve correctly against a trailing
+  default parameter). `submit_sales_invoice()` (the new entry point `InvoiceForm.jsx` now calls for
+  `type="sales"`, alongside the pre-existing `submit_purchase_invoice()` for `type="purchase"`) and
+  `approve_request()`'s new `sales_invoice_discount` branch call the core directly.
+- **The gated dimension is a discount PERCENTAGE (0-100), not an amount** — `approval_rules.min_amount`
+  reused to hold it, same precedent as Phase 43's wastage module reusing it for quantity. Seeded two
+  tiers: 0% → no approval (today's behavior, unchanged), 10%+ → COO (inclusive, matching how every
+  other module's own threshold already works — a one-point stricter reading than the spec's literal
+  ">10%", not a hardcoded rule; editable via the UI).
+- **A real bug caught by live-testing, not by inspection**: `create or replace function` does not
+  actually replace a function when a parameter is added — even with a default, Postgres treats the
+  different parameter count as a distinct overload. The OLD 6-arg `post_invoice()` and 7-arg
+  `_post_invoice_core()` were still sitting there alongside the new ones after the first handoff file
+  ran, making any named-argument (RPC) call that omitted `p_discount_pct` ambiguous between the two
+  overloads. Caught when a regression test posting a plain purchase invoice failed with "Could not
+  choose the best candidate function" — fixed with a small hotfix explicitly dropping the old-arity
+  overloads of both functions, leaving exactly one version of each (the frontend was never actually
+  broken by this, since nothing calls `post_invoice()` directly via RPC anymore — both sales and
+  purchase route through their `submit_*` wrappers — but it was a real latent landmine for any other
+  caller, not just a test artifact).
+- Tested live end-to-end: confirmed a 0% discount sale posts identically to before (regression);
+  confirmed a 5% discount (below the 10% threshold) posts immediately with hand-verified figures
+  (₹1,000 gross → ₹50 discount → ₹950 net taxable → ₹85.50 CGST + ₹85.50 SGST → ₹1,121 grand total);
+  confirmed a 15% discount creates a pending request (chain `["coo"]`, `amount` holding 15, not a rupee
+  figure); confirmed a wrong-role holder is rejected; confirmed the COO approves and the resulting
+  invoice's math is exactly correct (₹1,000 gross → ₹150 discount → ₹850 net taxable → ₹76.50 CGST +
+  ₹76.50 SGST → ₹1,003 grand total, journal balanced at ₹1,003) and that the line item's `rate` stays
+  the original undiscounted ₹1,000 while `taxable_value` correctly reflects the discount; confirmed
+  purchase invoices reject any nonzero discount, and — after the overload hotfix — confirmed both a
+  direct `post_invoice()` call and the real `submit_purchase_invoice()` production entry point still
+  post normal purchases correctly. Full cleanup afterward (one of my own cleanup-script comments said
+  "expect 15 approval_rules rows per company" when the real, correct count is 16 — an arithmetic slip
+  in the comment, not an actual discrepancy, confirmed by breaking down the count per entity_type);
+  `trial_balance()` confirmed 0=0.
+
+### Phase 50 — Approval Workflows, ninth module: Manual Credit/Debit Notes ✅
+- **Turned out smaller than planned**: a full manual, partial credit/debit note feature already existed
+  in this codebase from an earlier phase — `post_manual_credit_debit_note()`, `credit_note_line_items`,
+  and the `CreditDebitNoteForm.jsx`/`InvoiceDetail.jsx` UI were all already built and correct. It already
+  proportionally scales each adjusted line's *original posted* taxable/CGST/SGST/IGST amounts (never
+  re-resolving today's tax rate — the same historical-invariance rule CLAUDE.md requires), and already
+  tracks remaining-quantity per line to block double-crediting. What it never had was an approval gate.
+  This phase closed exactly that gap, not rebuilt the feature.
+- Same core+wrapper split as every module in Phases 40-49: `_post_manual_credit_debit_note_core()`
+  extracted (no auth check), `post_manual_credit_debit_note()` reduced to a thin wrapper (still checks
+  admin/accountant itself, unchanged direct-call behavior). `submit_credit_debit_note()` (the new entry
+  point `CreditDebitNoteForm.jsx` now calls) and `approve_request()`'s new `credit_debit_note` branch
+  call the core directly.
+- **Deliberate departure from every other module's seed convention**: every other module seeds a
+  `min_amount=0 → []` tier reproducing "today's immediate-post behavior," since that behavior already
+  existed and had to stay unchanged for zero regression. A manual credit/debit note never had a
+  UI-driven approval step before, so there's no backward-compatibility reason to keep it auto-postable —
+  and the spec's own workflow diagram for this document type never shows a no-approval path at all
+  ("this needs stronger control because it directly changes revenue/tax"). Seeded accordingly: **even
+  the ₹0 tier requires CFO sign-off**; ₹100,000+ additionally requires the CEO. Still fully editable via
+  the UI like every other threshold.
+- Threshold basis: the note's own pre-tax subtotal, computed in `submit_credit_debit_note()` via the
+  same proportional-scaling arithmetic the core uses authoritatively (read-only preview, changes
+  nothing) — same reasoning as Phase 42's purchase-invoice subtotal.
+- Tested live end-to-end against two posted sales invoices (₹10,000 and ₹150,000 pre-tax, same-state
+  18% GST): confirmed a small credit note (2 of 10 units, ₹2,000 pre-tax) still requires CFO approval
+  despite being below the high-value threshold (no free tier), with the resulting note's proportional
+  scaling exactly correct (₹2,000 taxable → ₹180 CGST + ₹180 SGST → ₹2,360 grand total, journal
+  balanced) and the `credit_note_line_items` row correctly recording the adjusted quantity and scaled
+  taxable value; confirmed a wrong-role holder is rejected; confirmed a full ₹150,000 credit note
+  correctly resolves the two-step `[cfo, ceo]` chain, with CFO advancing it to step 1 and CEO completing
+  it (₹150,000 → ₹177,000 grand total, journal balanced); confirmed the pre-existing over-crediting
+  guard still works correctly through the new approval path — submitting a request for 9 more units
+  when only 8 remained created a pending record (the guard lives in the core, not the cheap preview in
+  `submit_credit_debit_note()`), and CFO's approval attempt correctly failed with the exact "only 8.00
+  remain" error, rolling back the entire `approve_request()` call (the request stayed at step 0/pending,
+  not partially advanced) — confirming Postgres correctly rolled back the whole transaction, not just
+  the core's own insert; confirmed the direct `post_manual_credit_debit_note()` call still works
+  unchanged for admin/accountant (regression). Full cleanup afterward; `trial_balance()` confirmed 0=0.
+
+### Phase 51 — Approval Workflows, tenth module: Purchase Request → Purchase Order ✅
+- Matches the spec's section 8 fuller purchase flow: Inventory Manager raises a Purchase Request → COO
+  approves it (that approval directly authorizes a Purchase Order — the spec's own diagram never shows
+  a separate approval step for the order itself) → an Accountant later fulfills that order with a real
+  Purchase Invoice (already gated since Phase 42) → CFO approves if above the existing invoice
+  threshold; high-value requests additionally need CFO and CEO. Genuinely new entities
+  (`purchase_requests`/`purchase_orders`), unlike every module in Phases 40-50 — neither posts anything
+  financial; the only ledger effect happens later, when the already-gated purchase invoice is actually
+  created against an open order.
+- **Threshold basis is an ESTIMATED amount the requester supplies** — unlike every other module, there
+  is no canonical "price" on an item in this schema to derive a threshold from (a raw material's
+  `average_cost` only exists after a purchase, and a first-time item has none at all). The real amount
+  is determined independently and re-gated on its own terms when the eventual purchase invoice is
+  created — confirmed live: a ₹600,000 estimated request's own fulfilling invoice (at a different,
+  actual negotiated rate) crossed the *purchase invoice's own* ₹500,000 tier too, correctly requiring
+  its own separate COO→CFO→CEO chain, entirely independent of the request's chain.
+- Same seed-convention departure as Phase 50: COO approval is always required (no auto-post tier),
+  matching the spec's own diagram; only the CFO+CEO escalation is threshold-gated.
+- **Closes the loop into the existing purchase-invoice flow**: `submit_purchase_invoice()` gained an
+  optional `p_purchase_order_id` — when set, both its auto-approve path and `approve_request()`'s
+  pre-existing `purchase_invoice` branch mark the order `fulfilled` once the invoice actually posts.
+  `cancel_purchase_order()` added too, matching the spec's explicit `purchase_order.cancel` permission.
+- `inventory_manager` — the spec's actual submitter for this document — got a new, precisely-named
+  `purchase_request.create` permission (rather than overloading the existing `inventory.create`, which
+  is about stock counts/adjustments, a different action), wired into `submit_purchase_request()`'s gate
+  the same way Phase 47 wired `payroll.prepare` into `submit_payroll_run()`.
+- **Two real bugs caught by live-testing, not by inspection, both fixed before any test could pass**:
+  (1) The first handoff file put `approve_request()`'s update *before* the new `purchase_orders` table
+  creation — but `approve_request()`'s declare block needs `public.purchase_orders` as a variable type,
+  and Postgres resolves declared variable types *at function-creation time*, unlike statement bodies,
+  which are only checked at first execution. The file failed immediately, with nothing applied.
+  (2) Investigating that error surfaced a **pre-existing structural bug in `schema.sql` itself**, latent
+  since Phase 45: the master fresh-install file appends new result-entity tables at the end, but
+  `approve_request()` lives at a fixed early position and declares a variable for every such type —
+  meaning a genuine top-to-bottom fresh install would have already failed at Phase 45's
+  `expense_claims`, and again at Phase 46's `access_grants`, not just now at `purchase_orders`. This
+  went undetected because the live database was always patched incrementally through individually
+  correct handoff files (each one happened to create its table before touching `approve_request()`),
+  never actually rebuilt from `schema.sql` top-to-bottom. Fixed properly, not patched around: moved the
+  bare `CREATE TABLE`/RLS statements for all three affected tables (`expense_claims`, `access_grants`,
+  `purchase_requests`/`purchase_orders`) to appear before `approve_request()`, leaving each table's full
+  design rationale as a comment at its original position, next to its supporting functions.
+  `schema.sql` is genuinely fresh-installable again. A corrected `phase51.sql` was then reassembled and
+  ran clean.
+- Tested live end-to-end: confirmed a ₹10,000 request (submitted by a real Inventory Manager app-role
+  holder, not admin/accountant) still requires COO despite being low-value (no free tier); confirmed a
+  wrong-role holder is rejected; confirmed COO's approval creates an open `purchase_orders` row with the
+  linked `purchase_requests` row recorded correctly; confirmed a ₹600,000 request correctly resolves the
+  full `[coo, cfo, ceo]` chain; confirmed order cancellation, double-cancellation rejection, and
+  wrong-role cancellation rejection; confirmed fulfilling the ₹600,000 order with a real invoice
+  (5,000 units × ₹120 = ₹600,000 at 5% GST → ₹630,000 grand total) correctly triggered the purchase
+  invoice's own independent approval chain, and completing it flipped the order to `fulfilled`;
+  confirmed attempting to fulfill an already-fulfilled order is rejected; confirmed a plain purchase
+  invoice with no `purchase_order_id` still posts normally (regression). Full cleanup afterward
+  (including one FK lesson: `stock_ledger` rows from the test purchases had to be cleared before the
+  test item itself could be deleted); `trial_balance()` confirmed 0=0.
+
+### Phase 52 — Approval Workflows, eleventh module: Production Entries ✅
+- Matches the spec's section 10: Kitchen Staff records production → Kitchen Manager approves → COO for
+  higher-level operational approval on large batches. Same core+wrapper split as every module in Phases
+  40-51: `_post_production_entry_core()` extracted from the pre-existing `post_production_entry()`,
+  which keeps its own admin/accountant check, unchanged for its existing direct caller.
+  `submit_production_entry()` (the new entry point `ProductionEntry.jsx` now calls) and
+  `approve_request()`'s new `production_entry` branch call the core directly.
+- **Lowest-risk phase in this initiative so far**: no new tables, and no parameter-count changes to any
+  existing function — `production_entries` already existed, and both `post_production_entry()` and
+  `approve_request()` kept their exact original signatures. Neither the Phase 49 overload-ambiguity
+  lesson nor the Phase 51 type-resolution-ordering lesson applied here, and the handoff file ran clean
+  on the first attempt.
+- Threshold basis: QUANTITY PRODUCED, not cost — same reasoning and precedent as Phase 43's wastage
+  module (the batch's actual cost is only known once `consume_item_fefo()` runs inside the core, since
+  it depends on which specific raw-material batches get consumed). Unlike Phases 50/51's credit-notes/
+  purchase-requests, this one **keeps a free auto-post tier at quantity 0** — production is routine,
+  high-frequency kitchen output, not an exception-driven document, so the normal "today's behavior stays
+  unchanged below the threshold" convention fit better here than the "always needs sign-off" departure.
+  Seeded two tiers: 0 → no approval, 500+ units → Kitchen Manager then COO.
+- `kitchen_manager` got a new, precisely-named `production.create` permission (not overloading the
+  existing `kitchen.create`, which is about kitchen/menu orders, a different action) — same precedent as
+  Phase 51's `purchase_request.create`.
+- `ProductionEntry.jsx` had no UI-level role gate at all before this phase (the RPC's own admin/
+  accountant check was the only enforcement) — now shows the form only to admin/accountant or a
+  qualifying Kitchen Manager app-role holder, and handles the pending/approved response shapes like
+  every other gated module's form.
+- Tested live end-to-end: confirmed a small batch (10 units, consuming 20kg of raw material at ₹10/kg)
+  still posts immediately with the FEFO-computed output-batch unit cost exactly correct (₹200 total ÷
+  10 units = ₹20/unit) and the journal balanced at ₹200; confirmed a large batch (600 units, consuming
+  500kg) creates a pending request with chain `[kitchen_manager, coo]`; confirmed a wrong-role holder is
+  rejected; confirmed Kitchen Manager advances it to step 1; confirmed COO completes it, with the
+  resulting batch's unit cost exactly correct (₹5,000 ÷ 600 units = ₹8.33/unit, rounded) and the journal
+  balanced at ₹5,000; confirmed the raw material's remaining stock is exactly correct after both batches
+  (1,000kg opening − 20kg − 500kg = 480kg). Full cleanup afterward (one lesson: the small batch's own
+  auto-approved `approval_requests` row still had to be found and deleted before its submitting user
+  could be removed, since `requested_by` is recorded even for immediately-approved requests, not just
+  pending ones); `trial_balance()` confirmed 0=0.
+
+### Phase 53 — Approval Workflows, twelfth module: Bank Reconciliation ✅
+- Matches the spec's section 19, but with a genuine architecture choice made explicitly with the user
+  first (asked via a direct question rather than guessed, per CLAUDE.md's "ask before guessing" rule):
+  gate each individual bank-transaction match, or build a real reconciliation-period/batch entity. The
+  user chose the batch entity — bigger, closer to the spec's literal wording.
+- **New table, not a gate on an existing function** — the first genuinely new entity since Phase 51's
+  purchase requests: `bank_reconciliations` (one draft period for one bank account + statement date
+  range, with its own `draft → pending → approved/rejected` lifecycle). The existing match/unmatch UI is
+  completely unchanged underneath — accountants keep matching transactions to payments exactly as
+  before, freely, while a period is `draft`. `submit_bank_reconciliation()` is the new step: it snapshots
+  every currently-matched, not-yet-claimed transaction in that account+period by setting
+  `bank_transactions.reconciliation_id`, so further matching elsewhere can't silently change what's under
+  review, then resolves the approval chain like every other module.
+- Because the reconciliation row already exists (in `pending` status) by submission time — unlike every
+  other module, where the core function creates its result row from scratch —
+  `_finalize_bank_reconciliation_core()` is a deliberate variant: it only flips `status` to `approved`,
+  it doesn't insert anything.
+- **`reject_request()`'s first-ever entity-specific side effect.** Every other module's rejection was a
+  pure status-flip no-op, since nothing had been created yet for any of them. Here the row and its
+  claimed transactions already exist, so rejecting a reconciliation now frees every transaction it had
+  claimed (`reconciliation_id = null`) and marks the reconciliation itself terminally `rejected` —
+  matching this app's immutable-original convention (a corrected attempt is a fresh reconciliation, not a
+  revived one) rather than reopening the old row back to `draft`.
+- **RLS tightened**: `bank_transactions_update` now blocks changing a transaction (matched_payment_id or
+  anything else) once its reconciliation is `pending` or `approved` — otherwise a direct table PATCH
+  could bypass `submit_bank_reconciliation()`/`approve_request()` entirely and silently alter what a CFO
+  is reviewing or already signed off on. A rejected reconciliation's transactions are freed again, so
+  they're never blocked by this. Had to be added at the very end of the file (drop + recreate), not in
+  place at the policy's original early position — same reasoning as Phase 39's own RLS narrowing and
+  Phase 51's table-ordering lesson: a policy's `USING` clause can't reference a table that doesn't exist
+  yet that early in a fresh install.
+- Applied the Phase 51 lesson **proactively** this time: `bank_reconciliations`' bare table + RLS
+  definition was placed ahead of `approve_request()` from the start (in the new pre-`approve_request()`
+  block alongside `expense_claims`/`access_grants`/`purchase_requests`/`purchase_orders`), rather than
+  discovering the ordering bug via a failed handoff file.
+- Threshold basis: the **absolute value** of the reconciled total — amounts are signed (inflow/outflow),
+  so a large outflow-heavy period shouldn't read as "small" just because its sum is negative. Kept the
+  free auto-post tier at 0 (like Phase 52's production entries, unlike Phases 50/51's notes/purchase
+  requests) — routine reconciliation is a high-frequency operation, not an exception-driven document.
+  Seeded two tiers: 0 → no approval, ₹500,000+ (absolute) → CFO. Placeholder numbers, not
+  compliance-blessed — editable via Roles & Permissions.
+- `Reconciliation.jsx` rewritten to add a reconciliation-period selector/list and a "new period" form,
+  with the existing match/unmatch UI scoped to whichever draft period is active; a "Submit for Approval"
+  button calls `submit_bank_reconciliation()` and handles the pending/approved response shapes like every
+  other gated module's form.
+- Tested live end-to-end against throwaway fixtures (one bank account, one customer, one service item, a
+  fresh tax rate, three test users — an accountant preparer, a CFO, and a COO with no CFO role): a small
+  reconciliation (₹1,180) auto-approved immediately and correctly claimed its one transaction; a large
+  reconciliation (₹5,90,000) came back `pending`, confirmed self-approval is blocked (the preparer cannot
+  approve their own submission), confirmed a wrong-role holder (COO, no `cfo` app-role) is rejected,
+  confirmed a raw `UPDATE` on the claimed transaction is blocked by RLS while `pending`, confirmed an
+  unrelated/unclaimed transaction stays freely editable throughout, confirmed the CFO's approval finalizes
+  it and the claimed transaction *still* can't be raw-updated afterward (now `approved`); a third
+  reconciliation (₹6,00,000) was submitted and then **rejected** by the CFO, confirming its transaction
+  was freed (`reconciliation_id` cleared) and the reconciliation itself is terminally `rejected` — then
+  confirmed the freed transaction could be claimed again by a brand-new reconciliation and approved
+  cleanly on retry. All fixtures (users, parties, items, tax rate, chart-of-accounts rows, bank account,
+  invoices/payments/journal entries, bank transactions, reconciliations, approval requests) were cleaned
+  up afterward in FK-safe order; `invoice_number_counters` was deliberately left untouched (it's a
+  shared, monotonic per-company/type/year sequence — GST Rule 46 requires consecutive unique numbering,
+  so resetting it would let a future real invoice reuse a number this test run already consumed).
+  `trial_balance()` confirmed 0=0 after cleanup.
+- **Noted, not fixed in this phase**: the live database still has a handful of unrelated leftover rows
+  named `P37 Test ...` (an expense/income account, a bank account, a vendor, a customer) in this same
+  company from an earlier phase's testing that was never fully cleaned up. Flagging it here rather than
+  deleting it silently — it's someone else's leftover state from a prior phase, not something Phase 53
+  touched, so removing it should be a deliberate, separately-confirmed action. **Resolved separately after
+  Phase 55** — confirmed nothing referenced them (no journal entries, invoices, payments, or other rows),
+  then deleted all 5 rows from the live database.
+
+### Phase 54 — Approval Workflows, thirteenth/fourteenth modules: GST Return and TDS Return sign-off ✅
+- Matches the spec's sections 19-21's literal "Accountant prepares → CFO approves → CA reviews" flow. Two
+  genuinely new entities — `gst_returns` and `tds_returns` — layered on top of the existing read-only
+  `gstr3b_summary()`/`tds_summary()` reports (Phases 8/32), which stay completely unchanged and still work
+  for ad hoc, non-filed lookups. Filing is a deliberate, separate action, not something that happens
+  automatically just by viewing a summary.
+- **First real use of `ca_auditor`** as an approval-chain participant. The existing sequential
+  `approve_request()` mechanism needed zero changes to support a two-role, cfo-then-ca chain — the whole
+  "CA reviews" step is just the CA holding the `ca_auditor` app role and being the last link in
+  `["cfo", "ca_auditor"]`.
+- **`gst_returns` snapshots the exact same figures `gstr3b_summary()` already reports** (outward supplies
+  net of sales credit notes, inward supplies net of purchase debit notes, split CGST/SGST/IGST) — via its
+  own explicitly company-scoped queries, not by calling `gstr3b_summary()` itself, since that function has
+  no `company_id` filter of its own and relies entirely on RLS for scoping, which a SECURITY DEFINER
+  function bypasses. Still deliberately does NOT compute a "net tax payable," for the same reason the
+  existing report doesn't (see its own header comment): the input-tax-credit set-off order is a real
+  compliance rule that can change, and a CA should apply it to the raw figures, not have this app decide
+  it. `submit_gst_return()`'s only use of a computed "amount" is a magnitude (sum of all six tax columns)
+  for approval-routing/display — explicitly commented as not a compliance figure.
+- **No "claiming" mechanism needed here**, unlike Phase 53's bank reconciliation: invoices and credit/debit
+  notes are already immutable once posted (no edit-after-post anywhere in this schema), so a filed
+  return's source data can't silently change underneath it the way editable bank-statement lines could.
+- **`tds_returns` snapshots the total TDS deducted** (Phase 32's `tds_transactions`) in the period, joined
+  through `payments.payment_date` exactly like `tds_summary()` does. `tds_transactions.deposited_on` is
+  deliberately left untouched by this workflow — it's an operational field naturally set AFTER a return is
+  filed (when the TDS is actually paid to the government), not a figure this approval signs off on.
+- **`reject_request()` gained its second and third entity-specific side effects** (after Phase 53's
+  bank-reconciliation one): both are simpler than that one, since nothing was ever "claimed" — just the
+  terminal status flip on `gst_returns`/`tds_returns` so a fresh return can be prepared for the same
+  period.
+- A partial unique index (`gst_returns_one_active_per_period`/`tds_returns_one_active_per_period`) blocks
+  two simultaneously active (`draft`/`pending`/`approved`) returns for the exact same period, same pattern
+  as Phase 48's payroll-run precedent — a rejected return doesn't block a fresh attempt at that period.
+- Applied the Phase 51 lesson proactively (same as Phase 53): both new tables were placed ahead of
+  `approve_request()` from the start, in the same pre-`approve_request()` block.
+- **Handoff-file quirk, caught and applied proactively this time** (Phase 53 discovered it reactively):
+  `schema.sql`'s own copy of `reject_request()` correctly stays a plain `create function` (it's a
+  fresh-install file, and that function only gets created once), but the live database already had it
+  from Phase 53's own `create or replace` — so `phase54.sql`'s copy needed `create or replace` for it to
+  run against the live database without a "function already exists" error.
+- Threshold basis: **neither return has a free auto-post tier at all**, regardless of amount — filing with
+  the government is always significant enough to need the full chain. Only a single flat `approval_rules`
+  row (`min_amount 0 → ["cfo", "ca_auditor"]`) is seeded for each — the first modules in this initiative
+  with no amount-based tiering whatsoever, not even Phase 50/51's "no free tier but still tiered by
+  amount."
+- `GstSummary.jsx`/`TdsSummary.jsx` each got a "File this period for approval" button (admin/accountant
+  only, reusing the page's existing date-range picker) and a filed-returns history table underneath the
+  live report.
+- Tested live end-to-end against throwaway fixtures (one bank account, a customer and a vendor, one
+  service item, a fresh GST rate and TDS section, four test users — an accountant preparer, a CFO, a CA,
+  and a COO with neither role): a GST return for one period (₹1,00,000 sales/₹40,000 purchase, both 18%
+  same-state) correctly snapshotted outward/inward CGST+SGST; confirmed self-approval blocked, a wrong-role
+  holder blocked at the CFO step, the CFO's approval advancing the request to step 1 without finalizing it,
+  the CFO unable to also act as the CA step, and the CA's approval finalizing it; confirmed a second active
+  return for the same period is rejected by the unique index; a second period's GST return was submitted
+  and rejected by the CFO, confirmed terminally `rejected`, and confirmed a fresh return for that same
+  period could then be created. Repeated the same sequence for a TDS return (a ₹50,000 payment with a 10%
+  TDS section correctly aggregated to ₹5,000; full cfo→ca approval chain; a second period rejected then
+  resubmitted). All 24 checks passed. Fixtures cleaned up afterward in FK-safe order (including
+  `tds_transactions`, unique on `payment_id`, deleted before its payment); `invoice_number_counters` again
+  deliberately left untouched. `trial_balance()` confirmed 0=0 after cleanup.
+- **Still not fixed, noted again**: the unrelated leftover `P37 Test ...` rows flagged in Phase 53's
+  retrospective are still present — untouched by this phase for the same reason as before. **Resolved
+  separately after Phase 55** — see the updated note on Phase 53's retrospective above.
+
+### Phase 55 — CA/Audit review loop ✅
+- **Architecturally different from every module in Phases 40-54, on purpose**: `approve_request()`/
+  `reject_request()` are completely untouched by this phase. Those modules all block a pending FINANCIAL
+  ACTION until sign-off; this is the opposite shape — a CA (or an accountant who spots something odd)
+  flags an already-posted record or a whole period for review, records findings as the investigation
+  proceeds, and signs off when satisfied. Nothing is ever blocked or reversed by a flag; it's a review
+  trail layered alongside the ledger, not a control gate in front of it, matching the spec's own framing
+  of this as a review loop rather than an approval chain.
+- Two new tables: `audit_flags` (one row per flagged item/period, `open`/`resolved`) and `audit_findings`
+  (an append-only, multi-row list of investigation notes against a flag, each with its own author and
+  timestamp — same reasoning as `approval_requests.decisions`, just a real child table instead of a jsonb
+  array since there's no fixed-length chain to walk here).
+- `reference_type`/`reference_id` deliberately mirror `approval_requests.entity_type`'s own precedent:
+  plain text, not a real foreign key, since a flag can point at any of a dozen+ different tables and
+  Postgres can't have an FK reference "whichever table this row names." The one special value is
+  `'period'` (`reference_id` null, `period_start`/`period_end` required instead), enforced by a real check
+  constraint (`audit_flags_reference_shape`) — the one piece of real structural validation this phase
+  needed.
+- **Deliberately does NOT dispatch on `reference_type` to verify the referenced row actually exists** in
+  whichever table it names (unlike `approve_request()`'s dispatch to the right `_core()` function) — an
+  audit flag has no amount, no journal entries, no compliance math; it's a note, not a financial
+  calculation, so CLAUDE.md's "never cut corners" exceptions (financial calculations, ledger posting)
+  don't apply here. A 13-branch existence-check switch for a metadata-only record would have been
+  premature generalization.
+- **Authority split, a real judgment call flagged here rather than re-confirmed with the user mid-phase**:
+  admin/accountant OR a `ca_auditor` app-role holder can raise a flag (broader — an accountant noticing
+  something odd should be able to flag it for the CA's attention, not only the CA themselves), but only
+  `ca_auditor` (or admin, the same superuser-override precedent used throughout this schema) can record
+  findings or sign off — that narrower authority is specifically the CA's job per the spec. Worth
+  revisiting if it turns out flagging should be CA-only too.
+- New page `AuditReview.jsx` (`/audit-review`, alongside Approvals in the nav) — a flag form
+  (record-by-ID or period), an open-flags list with inline "add finding"/"sign off" for qualifying users,
+  and a resolved-flags history. First page in this codebase needing PostgREST relationship-disambiguation
+  hints (`users!flagged_by`/`users!resolved_by`) since `audit_flags` is the first table with two separate
+  foreign keys to `users`.
+- Tested live end-to-end against throwaway fixtures (an accountant, a CA, and a plain viewer with neither
+  role): confirmed the accountant can flag a period but a plain viewer cannot flag anything; confirmed an
+  empty reason is rejected; confirmed the accountant can neither add a finding nor resolve their own flag;
+  confirmed the CA can add a finding and then resolve it (status/`resolved_by`/`resolved_at` all correct);
+  confirmed a resolved flag can't be resolved again and can't accept new findings; confirmed a
+  specific-record flag (a real invoice ID) works, and confirmed all three shape-validation failures
+  (missing `reference_id` on a non-period flag, period dates supplied on a non-period flag, missing dates
+  on a period flag). All 13 checks passed. Fixtures cleaned up afterward; `trial_balance()` confirmed
+  0=0 (this phase never touches the ledger at all, so this check is a no-op by construction, but run for
+  consistency with every other phase's closing verification).
+- **This is the last item in the gap-closure backlog** opened by the 32-section spec audit. The
+  "Deliberately flagged, not scheduled" list below remains the record of what was consciously left out.
+
+### Phases 56-57 — Warehouse-Aware Stock + Inter-Branch Stock Transfer Approval ✅
+- Revisits the "Inter-branch stock transfer approval" item from this section's own deferred list, at the
+  user's explicit choice after being shown three options ranging from a paper-trail-only transfer with no
+  real balance check up to a full warehouse-aware retrofit — the user chose the full retrofit, presented
+  and approved via a formal plan (`EnterPlanMode`/`ExitPlanMode`) given its size and the fact that it
+  touches `consume_item_fefo()`, the shared costing engine behind every sale, wastage entry, production
+  entry, and R&D trial in this app.
+- **Real prerequisite gap found during planning**: `stock_ledger`/`item_batches.warehouse_id` had existed
+  since Phase 28 but was never populated or read by anything — every stock computation in the app
+  (`consume_item_fefo()`, `item_current_stock`, `item_batch_status`, `stock_valuation()`, the
+  Inventory/Dashboard low-stock widgets) was company-wide, not warehouse-scoped. A transfer that can't
+  verify the source warehouse actually holds the stock isn't a real control, so this became two phases:
+  Phase 56 makes warehouse tracking real; Phase 57 builds the actual transfer/approval feature on top.
+- **Phase 56** (no user-visible behavior change): `current_user_default_warehouse_id()` mirrors
+  `current_user_default_branch_id()`; `stock_ledger`/`item_batches.warehouse_id` got a column DEFAULT
+  (same technique Phase 20 used for `branch_id`), so every existing insert statement anywhere in the app
+  picked up a correct warehouse automatically with zero code changes; a backfill assigned every
+  pre-existing row to its company's one default warehouse, followed immediately by `set not null` — which
+  is what actually proved the backfill was complete, since an incomplete backfill would have made that
+  statement fail outright rather than silently leaving a gap. `consume_item_fefo()` gained two
+  both-default-null parameters (`p_warehouse_id` to scope FEFO consumption to one warehouse,
+  `p_to_warehouse_id` to mirror a consumed slice into a destination warehouse — the actual "move"
+  mechanic Phase 57 uses) — every existing caller (sales, wastage, production, R&D trials) needed zero
+  changes. Applied the Phase 49 lesson proactively (explicit `drop function` before the `create or
+  replace`, since a parameter was added). Two new, purely additive views
+  (`item_current_stock_by_warehouse`, `item_batch_status_by_warehouse`) sit alongside the unchanged
+  originals — `Inventory.jsx`/`Dashboard.jsx` both hard-depend on exactly one row per item, confirmed via
+  a dedicated investigation before deciding not to touch those views' shape.
+- **Real bug caught during Phase 56's own live-testing**: `Branches.jsx` (the missing branch/warehouse
+  management screen this phase also had to build, since none existed at all) omitted `company_id` from
+  its `branches`/`warehouses` inserts, silently relying on a column default that doesn't exist for those
+  two tables — every other CRUD screen in this app (`ItemMaster.jsx`, etc.) explicitly sets
+  `company_id: profile.company_id`. RLS correctly rejected the insert; caught by testing the exact
+  RLS-scoped call an authenticated accountant session would make (not just a service-role bypass), fixed,
+  and re-verified.
+- **Phase 57**: `stock_transfers` — a "posted by default, cancellable" result entity (same shape as
+  `wastage`/`production_entries`), created ahead of `approve_request()` per the Phase 51 lesson, applied
+  proactively. Deliberately has no `entry_group_id` — moving stock between a company's own warehouses
+  changes location, not value, so no journal entries are ever posted against it; the reversal
+  (`cancel_stock_transfer()`) works purely off `stock_ledger`'s `reference_type`/`reference_id`, the same
+  blind-replay pattern already proven by `cancel_invoice()`/`cancel_wastage()`. `approve_request()` got
+  one new branch calling `_post_stock_transfer_core()`; no `reject_request()` change was needed, since
+  (like most modules) nothing exists until final approval, so a plain rejection is already correct.
+  Threshold basis: quantity transferred, not value (cost is only known once `consume_item_fefo()` runs) —
+  kept a free tier at 0, like production/bank reconciliation, since routine inter-branch movement isn't
+  exception-driven. `inventory_manager` got a new, precisely-named `stock_transfer.create` permission,
+  matching the Phase 51/52 precedent.
+- Tested live end-to-end against a genuine two-warehouse company (a throwaway accountant, an inventory
+  manager, a COO, and a plain viewer): a small transfer (20 units, below the 500-unit threshold) posted
+  immediately and correctly moved both quantity and cost, with the destination batch mirroring the
+  source batch's exact `unit_cost`; **critically, a transfer requesting more than a specific warehouse
+  actually held was rejected** — the whole point of Phase 56, proving the warehouse-scoped check is real
+  and not just a label, while confirming the failed attempt left that warehouse's stock unchanged; a
+  large transfer (600 units) correctly required COO approval, with self-approval and wrong-role attempts
+  both blocked; cancellation correctly reversed both legs (source restored, destination reduced back to
+  its pre-transfer level). All 16 checks passed on the second attempt — the first attempt's one failure
+  was a wrong expected value in the test script itself (arithmetic error on my part, not an implementation
+  bug), caught and corrected before re-running. Fixtures cleaned up afterward — this session's cleanup
+  script initially missed reversal-leg journal entries (a real gap in the cleanup approach, not the
+  schema) during Phase 56's own test, since it deleted by the *original* `entry_group_id` and missed the
+  reversal's own new one; fixed by scoping deletion by item/company instead, and applied correctly from
+  the start in Phase 57's cleanup. `trial_balance()` confirmed 0=0 after both phases' cleanup.
+- **Scope deliberately left minimal, flagged rather than built**: `Branches.jsx` has no delete and no
+  way to reassign which branch/warehouse is the default — just enough to make Phase 57 usable through the
+  app instead of the Supabase Table Editor.
+
+### Phases 59-63 — Role System Unification: Retire `users.role` ✅
+- The user asked to merge the two parallel role systems this app had accumulated — `users.role` (the
+  original 3-value `admin`/`accountant`/`viewer` enum from Week 1, the base "can this person write
+  financial data" gate) and `user_app_roles` (Phase 38's 13 named business roles, used for approval-chain
+  routing and, since Phase 47, a growing set of `role_permissions`-backed capability grants) — into one.
+  Given the real scope (149 `current_user_role()` call sites across `supabase/schema.sql`, 50
+  `profile.role` checks across 46 frontend files) and that this is access-control code — CLAUDE.md's
+  strictest "never cut corners" category, where a mistake locks out real users in one direction or grants
+  unauthorized write access in the other — this was scoped and executed as a full `EnterPlanMode`/
+  `ExitPlanMode` plan, not an ad hoc edit.
+- **The finding that shaped the whole design**: a parallel research pass (three Explore agents) found
+  that `assign_user_role()`/`revoke_user_role()` — the only way to grant someone their first app_role —
+  both require `current_user_can_manage_users()`, which was defined as `role = 'admin' and
+  can_manage_users`. Deleting `role` outright with nothing to replace it would have meant the first user
+  of a brand-new company could never be granted any role at all — a hard bootstrap deadlock. The fix: a
+  standalone `users.is_admin` boolean (the actual superuser concept — it has no equivalent among the 13
+  business roles, since it's an IT/system concept, not a business one), kept entirely separate from the
+  business-role enum.
+- The same research found a logical simplification: since `'viewer'` was the only third value in the old
+  enum, `current_user_role() <> 'viewer'` and `current_user_role() in ('admin', 'accountant')` were always
+  the same condition — collapsing 129 of the 149 call sites to one replacement predicate
+  (`current_user_is_admin() or current_user_has_permission('ledger.write')`) instead of three separately-
+  reasoned ones.
+- **Phase 59** (foundation, zero behavior change): added `is_admin`, backfilled 1:1 from `role = 'admin'`;
+  `current_user_can_manage_users()` redefined to read `is_admin` — one change that automatically fixed all
+  8 of its downstream consumers; new permission key `ledger.write`, seeded to the `accountant` app_role
+  only (the user's explicit choice over broadening it to the C-suite roles too, an exact 1:1 mirror of
+  today's behavior). `role`/`can_manage_users` deliberately not dropped yet — every later phase kept an
+  instant rollback path until the final cutover.
+- **Phase 60** (the 129 write/visibility call sites): **a real correctness bug caught before it shipped** —
+  the approved plan itself said 8 "already-broadened" RPCs (e.g. `submit_payroll_run`, gated as
+  admin/accountant OR `payroll.prepare`) should have their old-role check swapped to bare
+  `not current_user_is_admin()`. That would have silently dropped the accountant-equivalent bypass —
+  an accountant who could run payroll today would suddenly need `payroll.prepare` specifically too. Fixed
+  before any SQL was written: all 133 touched objects (83 RLS policies across 31 tables, 50 RPC functions)
+  got the identical, correct swap, with each RPC's own extra permission check preserved as an additional
+  OR, not a replacement. Also added a real data-migration backfill (`user_app_roles` gets an `accountant`
+  row for any existing `role='accountant'` user) after checking the live database first — zero real users
+  were actually affected today, but the migration is correct regardless of when one exists. Extracted the
+  incremental migration directly from the now-correct `schema.sql` with a small script (not hand-assembled)
+  specifically to avoid transcription errors at this scale.
+- **Phase 61** (the remaining 14 genuinely admin-only call sites: `tax_rates`, `tds_rates`,
+  `accounting_periods`, `gst_notification_log`, `audit_log`, `users_select`, `update_user_role`) —
+  `current_user_role() = 'admin'`/`<> 'admin'` → `current_user_is_admin()`/`not current_user_is_admin()`,
+  no `ledger.write` fallback (accountant was never part of these). Two of these
+  (`add_audit_finding`/`resolve_audit_flag`) kept their `ca_auditor` OR-branch completely untouched.
+  **Cleanup caught another near-miss**: an early draft of the cleanup script deleted `accounting_periods`
+  scoped only by `company_id` — which would have wiped every real accounting period for the company, not
+  just the test rows. Caught and fixed (scoped to the exact test period dates) before running.
+- **Phase 62** (frontend): centralized `user_app_roles` fetching into `AuthContext` (`profile.is_admin`/
+  `profile.app_roles`), replacing what used to be a separate per-page query on several pages. 43 of 46
+  files got the mechanical swap via a script; 3 hybrid files (combining the base check with an extra
+  specific role) hand-edited individually. **While verifying, found 4 more files**
+  (`Approvals.jsx`, `ProjectDetail.jsx`, `PurchaseRequests.jsx`, `StockTransfers.jsx`) still running their
+  own redundant `user_app_roles` query into local `myRoles` state — exactly the duplication centralizing
+  this was meant to eliminate — and consolidated those too, beyond what the plan had explicitly called out.
+- **Phase 63** (final cutover): `update_user_role()` replaced by `update_user_admin_status()` (same
+  authority check, but the `p_role` parameter is gone — assigning a named business role is
+  `assign_user_role()`'s/`revoke_user_role()`'s job, unchanged); `current_user_role()` removed;
+  `users.role` column and the `user_role` enum type dropped for real. **The live run failed on the first
+  attempt**: `DROP FUNCTION current_user_role()` hit `2BP01: other objects depend on it` — two
+  `storage.objects` RLS policies (`attachments_storage_insert`/`_delete`, Supabase Storage bucket
+  policies, a different Postgres schema entirely) still referenced it live. Root cause: Phase 60's
+  extraction script only matched `create policy ... on public.<table>`, so it silently never generated a
+  migration for these two policies — even though the same blind whole-file text replacement had already
+  (correctly) updated `schema.sql`'s own copy of them, so the gap was invisible in the reference file and
+  only surfaces against the live database. Confirmed the failed transaction had rolled back cleanly
+  (nothing partially applied — `update_user_admin_status` didn't exist, `users.role` was still present),
+  fixed by retroactively applying the missed policy migration first, then re-ran clean.
+- Tested live end-to-end at every phase against throwaway users spanning every combination this migration
+  needed to prove: an `is_admin`-only user (role never touched) bypassing everything; an `accountant`
+  app-role holder (role left at `'viewer'`) getting full ledger write access purely from the new
+  mechanism; the `payroll.prepare`/`purchase_request.create`/`production.create`/`stock_transfer.create`
+  broadened gates still working for holders with neither `is_admin` nor `accountant`; the
+  employee-visibility narrowing (`employees`/`attendance`/etc.) still correctly scoping a plain `employee`
+  app-role holder to their own linked record while an accountant-equivalent sees everyone; a real Supabase
+  Storage upload/delete cycle proving the retroactively-fixed policies work; and, finally, confirming
+  `update_user_admin_status()`'s full authority chain (self-edit blocked, `can_manage_users` requires
+  `is_admin`, a plain viewer blocked outright). A closing grep sweep confirmed zero remaining
+  `current_user_role()`/`profile.role`/`public.user_role` references anywhere in the codebase — every hit
+  left is a historical comment. `trial_balance()` confirmed 0=0 after every phase's cleanup.
+
+**Deliberately flagged, not scheduled** (real scope decisions, not oversights):
+- **Dynamic role creation** (a CTO builds custom roles by picking modules/actions/scope, sections
+  24-26) — the 13-role model is a Postgres enum baked into `user_app_roles`, `approval_chain` (a jsonb
+  array of role strings), and every RLS policy's role checks. Converting that into a fully dynamic
+  role-builder is a major structural rewrite, not an incremental phase — only worth doing if a real
+  need for ad hoc roles beyond the 13 actually emerges.
+- **Marketing spend approval** — no campaigns/marketing-spend module exists in this app at all; nothing
+  to gate.
+- **A standalone "Inventory Adjustment" entity distinct from Wastage** — wastage already covers
+  shrinkage/loss; a second, overlapping stock-adjustment entity wasn't a clear enough distinct need to
+  justify building sight-unseen.
 
 ### Later (not in current scope)
 - Multi-branch UI: branch switcher and consolidated multi-branch reports. Phase 20 makes the

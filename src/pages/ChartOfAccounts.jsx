@@ -6,7 +6,7 @@ const ACCOUNT_TYPES = ['asset', 'liability', 'income', 'expense', 'equity']
 
 export function ChartOfAccounts() {
   const { profile } = useAuth()
-  const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
 
   const [accounts, setAccounts] = useState([])
   const [loading, setLoading] = useState(true)

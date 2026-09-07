@@ -3,6 +3,7 @@ import { Layout } from './components/Layout'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { Login } from './pages/Login'
 import { CompanyProfile } from './pages/CompanyProfile'
+import { Branches } from './pages/Branches'
 import { ChartOfAccounts } from './pages/ChartOfAccounts'
 import { ItemMaster } from './pages/ItemMaster'
 import { PartyMaster } from './pages/PartyMaster'
@@ -11,9 +12,12 @@ import { TaxRates } from './pages/TaxRates'
 import { Quotes } from './pages/Quotes'
 import { SalesInvoices } from './pages/SalesInvoices'
 import { PurchaseInvoices } from './pages/PurchaseInvoices'
+import { PurchaseRequests } from './pages/PurchaseRequests'
+import { StockTransfers } from './pages/StockTransfers'
 import { ManageUsers } from './pages/ManageUsers'
 import { RolesPermissions } from './pages/RolesPermissions'
 import { Approvals } from './pages/Approvals'
+import { AuditReview } from './pages/AuditReview'
 import { Inventory } from './pages/Inventory'
 import { BankTransactions } from './pages/BankTransactions'
 import { Reconciliation } from './pages/Reconciliation'
@@ -71,6 +75,7 @@ function App() {
       >
         <Route path="/" element={<Dashboard />} />
         <Route path="/company" element={<CompanyProfile />} />
+        <Route path="/branches" element={<Branches />} />
         <Route path="/chart-of-accounts" element={<ChartOfAccounts />} />
         <Route path="/items" element={<ItemMaster />} />
         <Route path="/inventory" element={<Inventory />} />
@@ -79,8 +84,11 @@ function App() {
         <Route path="/quotes/*" element={<Quotes />} />
         <Route path="/sales-invoices/*" element={<SalesInvoices />} />
         <Route path="/purchase-invoices/*" element={<PurchaseInvoices />} />
+        <Route path="/purchase-requests" element={<PurchaseRequests />} />
         <Route path="/bank-transactions" element={<BankTransactions />} />
         <Route path="/reconciliation" element={<Reconciliation />} />
+        <Route path="/stock-transfers" element={<StockTransfers />} />
+        <Route path="/audit-review" element={<AuditReview />} />
         <Route path="/ledger" element={<Ledger />} />
         <Route path="/trial-balance" element={<TrialBalance />} />
         <Route path="/profit-and-loss" element={<ProfitAndLoss />} />

@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
+import { useAuth } from '../context/AuthContext'
 
 const today = () => new Date().toISOString().slice(0, 10)
 const emptyConsumption = { item_id: '', quantity: '' }
 
 export function ProductionEntry() {
+  const { profile } = useAuth()
   const [finishedGoods, setFinishedGoods] = useState([])
   const [rawMaterials, setRawMaterials] = useState([])
   const [customOrders, setCustomOrders] = useState([])
@@ -20,6 +22,8 @@ export function ProductionEntry() {
   const [info, setInfo] = useState(null)
   const [submitting, setSubmitting] = useState(false)
 
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant') || profile?.app_roles?.includes('kitchen_manager')
+
   useEffect(() => {
     async function loadOptions() {
       const [{ data }, { data: orderRows }] = await Promise.all([
@@ -31,6 +35,7 @@ export function ProductionEntry() {
       setCustomOrders(orderRows ?? [])
     }
     loadOptions()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const updateConsumption = (index, field, value) => {
@@ -54,7 +59,7 @@ export function ProductionEntry() {
     }
 
     setSubmitting(true)
-    const { data, error: postError } = await supabase.rpc('post_production_entry', {
+    const { data: request, error: postError } = await supabase.rpc('submit_production_entry', {
       p_finished_good_item_id: finishedGoodId,
       p_quantity_produced: parseFloat(quantityProduced),
       p_production_date: productionDate,
@@ -68,7 +73,11 @@ export function ProductionEntry() {
       setError(postError.message)
       return
     }
-    setInfo(`Recorded: produced ${data.quantity_produced} unit(s) on ${data.production_date}.`)
+    if (request.status === 'pending') {
+      setInfo(`Submitted for approval (needs: ${request.approval_chain.join(', ')}). See Approvals.`)
+    } else {
+      setInfo(`Recorded: produced ${parseFloat(quantityProduced)} unit(s) on ${productionDate}.`)
+    }
     setQuantityProduced('')
     setExpiryDate('')
     setCustomOrderId('')
@@ -84,6 +93,10 @@ export function ProductionEntry() {
         purchased stock, and their cost carries into this batch's finished-goods cost automatically.
       </p>
 
+      {error && <p className="mb-4 text-sm text-clay">{error}</p>}
+      {info && <p className="mb-4 text-sm text-green-600">{info}</p>}
+
+      {canEdit && (
       <form onSubmit={handleSubmit} className="space-y-4">
         <label className="block text-sm">
           <span className="mb-1 block text-muted">Finished good produced</span>
@@ -205,9 +218,6 @@ export function ProductionEntry() {
           </button>
         </div>
 
-        {error && <p className="text-sm text-clay">{error}</p>}
-        {info && <p className="text-sm text-green-600">{info}</p>}
-
         <button
           type="submit"
           disabled={submitting}
@@ -216,6 +226,7 @@ export function ProductionEntry() {
           {submitting ? 'Recording…' : 'Record Production'}
         </button>
       </form>
+      )}
     </div>
   )
 }

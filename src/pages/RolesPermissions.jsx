@@ -20,7 +20,7 @@ const ROLE_LABELS = {
 
 export function RolesPermissions() {
   const { profile } = useAuth()
-  const canManage = profile?.role === 'admin' && profile?.can_manage_users
+  const canManage = profile?.is_admin && profile?.can_manage_users
 
   const [users, setUsers] = useState([])
   const [userRoles, setUserRoles] = useState([]) // rows from user_app_roles
@@ -44,6 +44,14 @@ export function RolesPermissions() {
     { value: 'project_invoice', label: 'Project invoice' },
     { value: 'expense_claim', label: 'Expense claim' },
     { value: 'access_request', label: 'Access request (amount is always 0 — single tier only)' },
+    { value: 'sales_invoice_discount', label: 'Sales invoice discount (threshold is discount %, not amount)' },
+    { value: 'credit_debit_note', label: 'Credit/debit note' },
+    { value: 'purchase_request', label: 'Purchase request (threshold is an estimated amount)' },
+    { value: 'production_entry', label: 'Production entry (threshold is quantity produced, not cost)' },
+    { value: 'bank_reconciliation', label: 'Bank reconciliation' },
+    { value: 'gst_return', label: 'GST return (no free tier — always needs the full chain)' },
+    { value: 'tds_return', label: 'TDS return (no free tier — always needs the full chain)' },
+    { value: 'stock_transfer', label: 'Stock transfer (threshold is quantity, not value)' },
   ]
   const [entityType, setEntityType] = useState(APPROVAL_ENTITY_TYPES[0].value)
   const [approvalRules, setApprovalRules] = useState([])

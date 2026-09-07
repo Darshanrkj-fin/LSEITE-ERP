@@ -100,7 +100,7 @@ function LookupList({ table, title, canEdit, companyId }) {
 
 export function Departments() {
   const { profile } = useAuth()
-  const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
 
   return (
     <div className="max-w-xl">

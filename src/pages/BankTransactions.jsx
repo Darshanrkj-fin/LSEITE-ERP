@@ -8,7 +8,7 @@ const emptyTxn = { transaction_date: '', amount: '', description: '', bank_accou
 
 export function BankTransactions() {
   const { profile } = useAuth()
-  const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
 
   const [txns, setTxns] = useState([])
   const [bankAccounts, setBankAccounts] = useState([])

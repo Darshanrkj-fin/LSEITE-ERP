@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext'
 
 export function GstAlerts() {
   const { profile } = useAuth()
-  const canReview = profile?.role === 'admin'
+  const canReview = profile?.is_admin
 
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)

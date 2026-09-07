@@ -3,11 +3,10 @@ import { supabase } from '../lib/supabaseClient'
 import { useAuth } from '../context/AuthContext'
 
 const emptyForm = { action: 'create-user', username: '', password: '' }
-const ROLES = ['admin', 'accountant', 'viewer']
 
 export function ManageUsers() {
   const { profile, session } = useAuth()
-  const canManageUsers = profile?.role === 'admin' && profile?.can_manage_users
+  const canManageUsers = profile?.is_admin && profile?.can_manage_users
 
   const [form, setForm] = useState(emptyForm)
   const [error, setError] = useState(null)
@@ -23,7 +22,7 @@ export function ManageUsers() {
     setUsersLoading(true)
     const { data, error: fetchError } = await supabase
       .from('users')
-      .select('id, full_name, role, can_manage_users')
+      .select('id, full_name, is_admin, can_manage_users')
       .order('full_name')
     if (fetchError) setUsersError(fetchError.message)
     else setUsers(data ?? [])
@@ -77,9 +76,9 @@ export function ManageUsers() {
   const saveUser = async (user) => {
     setUsersError(null)
     setSavingId(user.id)
-    const { error: rpcError } = await supabase.rpc('update_user_role', {
+    const { error: rpcError } = await supabase.rpc('update_user_admin_status', {
       p_user_id: user.id,
-      p_role: user.role,
+      p_is_admin: user.is_admin,
       p_can_manage_users: user.can_manage_users,
     })
     setSavingId(null)
@@ -149,10 +148,12 @@ export function ManageUsers() {
       </div>
 
       <div>
-        <h2 className="mb-1 text-sm font-semibold text-ink">Roles &amp; permissions</h2>
+        <h2 className="mb-1 text-sm font-semibold text-ink">Admin access</h2>
         <p className="mb-4 text-sm text-muted">
-          Only an admin with "Can manage users" can change these. You can't edit your own row here — ask another
-          admin, or use the Supabase Table Editor.
+          Superuser status only — assigning specific business roles (accountant, CFO, kitchen manager, ...)
+          and their permissions happens on the Roles &amp; Permissions page. Only an admin with "Can manage
+          users" can change these. You can't edit your own row here — ask another admin, or use the Supabase
+          Table Editor.
         </p>
 
         {usersError && <p className="mb-4 text-sm text-clay">{usersError}</p>}
@@ -164,7 +165,7 @@ export function ManageUsers() {
             <thead>
               <tr className="border-b border-slate-200 text-left text-muted">
                 <th className="py-2 pr-4">Name</th>
-                <th className="py-2 pr-4">Role</th>
+                <th className="py-2 pr-4">Admin</th>
                 <th className="py-2 pr-4">Can manage users</th>
                 <th className="py-2 pr-4" />
               </tr>
@@ -179,23 +180,18 @@ export function ManageUsers() {
                       {isSelf && <span className="ml-2 text-xs text-muted">(you)</span>}
                     </td>
                     <td className="py-2 pr-4">
-                      <select
+                      <input
+                        type="checkbox"
                         disabled={isSelf}
-                        value={u.role}
-                        onChange={(e) => updateUserField(u.id, 'role', e.target.value)}
-                        className="rounded border border-slate-300 px-2 py-1 disabled:opacity-50"
-                      >
-                        {ROLES.map((r) => (
-                          <option key={r} value={r}>
-                            {r}
-                          </option>
-                        ))}
-                      </select>
+                        checked={u.is_admin}
+                        onChange={(e) => updateUserField(u.id, 'is_admin', e.target.checked)}
+                        className="disabled:opacity-50"
+                      />
                     </td>
                     <td className="py-2 pr-4">
                       <input
                         type="checkbox"
-                        disabled={isSelf || u.role !== 'admin'}
+                        disabled={isSelf || !u.is_admin}
                         checked={u.can_manage_users}
                         onChange={(e) => updateUserField(u.id, 'can_manage_users', e.target.checked)}
                         className="disabled:opacity-50"

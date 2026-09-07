@@ -9,7 +9,7 @@ export function TaxRates() {
   // Matches the tax_rates_write/update/delete RLS policies: admin only,
   // not accountant — rate changes are reviewed manually, never auto-applied
   // (CLAUDE.md section 3).
-  const canEdit = profile?.role === 'admin'
+  const canEdit = profile?.is_admin
 
   const [rates, setRates] = useState([])
   const [loading, setLoading] = useState(true)

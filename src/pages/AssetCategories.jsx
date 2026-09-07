@@ -6,7 +6,7 @@ const emptyCategory = { name: '', useful_life_years: '' }
 
 export function AssetCategories() {
   const { profile } = useAuth()
-  const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
 
   const [categories, setCategories] = useState([])
   const [loading, setLoading] = useState(true)

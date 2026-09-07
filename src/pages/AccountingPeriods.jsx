@@ -10,7 +10,7 @@ const emptyPeriod = { period_start: '', period_end: '' }
 // there's no delete here on purpose, only open/closed toggling.
 export function AccountingPeriods() {
   const { profile } = useAuth()
-  const canEdit = profile?.role === 'admin'
+  const canEdit = profile?.is_admin
 
   const [periods, setPeriods] = useState([])
   const [loading, setLoading] = useState(true)

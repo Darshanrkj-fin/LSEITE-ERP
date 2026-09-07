@@ -27,6 +27,7 @@ export function InvoiceForm({ type, basePath }) {
   const [invoiceDate, setInvoiceDate] = useState(today())
   const [accountId, setAccountId] = useState('')
   const [customOrderId, setCustomOrderId] = useState('')
+  const [discountPct, setDiscountPct] = useState('0')
   const [lines, setLines] = useState([{ ...emptyLine }])
   const [previews, setPreviews] = useState([])
 
@@ -75,7 +76,12 @@ export function InvoiceForm({ type, basePath }) {
           })
           if (rateError || taxRate == null) return { error: `No tax rate for HSN ${item.hsn_sac_code}` }
 
-          const taxable = Math.round(quantity * rate * 100) / 100
+          // Discount is sales-only (see _post_invoice_core()'s guard) —
+          // applied before GST, same as the server does, so this preview
+          // never disagrees with what actually gets posted.
+          const grossTaxable = Math.round(quantity * rate * 100) / 100
+          const discount = type === 'sales' ? parseFloat(discountPct) || 0 : 0
+          const taxable = Math.round(grossTaxable * (1 - discount / 100) * 100) / 100
           const { data: split, error: splitError } = await supabase
             .rpc('calculate_gst_split', {
               p_seller_state_code: companyStateCode,
@@ -87,13 +93,13 @@ export function InvoiceForm({ type, basePath }) {
           if (splitError) return { error: splitError.message }
 
           const lineTotal = taxable + split.cgst + split.sgst + split.igst
-          return { taxRate, taxable, ...split, lineTotal }
+          return { taxRate, grossTaxable, taxable, ...split, lineTotal }
         })
       )
       setPreviews(results)
     }
     recalculate()
-  }, [lines, partyId, invoiceDate, parties, items, companyStateCode])
+  }, [lines, partyId, invoiceDate, parties, items, companyStateCode, type, discountPct])
 
   const updateLine = (index, field, value) => {
     setLines((ls) => ls.map((l, i) => (i === index ? { ...l, [field]: value } : l)))
@@ -106,6 +112,7 @@ export function InvoiceForm({ type, basePath }) {
     (acc, p) => {
       if (!p || p.error) return acc
       return {
+        grossSubtotal: acc.grossSubtotal + p.grossTaxable,
         subtotal: acc.subtotal + p.taxable,
         cgst: acc.cgst + p.cgst,
         sgst: acc.sgst + p.sgst,
@@ -113,8 +120,9 @@ export function InvoiceForm({ type, basePath }) {
         grand: acc.grand + p.lineTotal,
       }
     },
-    { subtotal: 0, cgst: 0, sgst: 0, igst: 0, grand: 0 }
+    { grossSubtotal: 0, subtotal: 0, cgst: 0, sgst: 0, igst: 0, grand: 0 }
   )
+  const discountAmount = totals.grossSubtotal - totals.subtotal
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -140,10 +148,10 @@ export function InvoiceForm({ type, basePath }) {
     }
 
     setSubmitting(true)
-    // Purchases go through the approval-aware entry point (may need
-    // sign-off above a configured amount — see Roles & Permissions);
-    // sales invoicing has no approval gate and keeps calling post_invoice
-    // directly, unchanged.
+    // Both go through their own approval-aware entry point (may need
+    // sign-off above a configured amount/discount — see Roles &
+    // Permissions): purchases on the invoice subtotal, sales on the
+    // discount percentage.
     const { data, error: postError } =
       type === 'purchase'
         ? await supabase.rpc('submit_purchase_invoice', {
@@ -153,12 +161,12 @@ export function InvoiceForm({ type, basePath }) {
             p_line_items: payloadLines,
             p_custom_order_id: customOrderId || null,
           })
-        : await supabase.rpc('post_invoice', {
-            p_type: type,
+        : await supabase.rpc('submit_sales_invoice', {
             p_party_id: partyId,
             p_invoice_date: invoiceDate,
             p_revenue_expense_account_id: accountId,
             p_line_items: payloadLines,
+            p_discount_pct: parseFloat(discountPct) || 0,
             p_custom_order_id: customOrderId || null,
           })
     setSubmitting(false)
@@ -168,11 +176,11 @@ export function InvoiceForm({ type, basePath }) {
       return
     }
 
-    if (type === 'purchase' && data.status === 'pending') {
+    if (data.status === 'pending') {
       setInfo(`Submitted for approval (needs: ${data.approval_chain.join(', ')}). See Approvals.`)
       return
     }
-    navigate(`${basePath}/${type === 'purchase' ? data.result_entity_id : data.id}`)
+    navigate(`${basePath}/${data.result_entity_id}`)
   }
 
   return (
@@ -241,6 +249,21 @@ export function InvoiceForm({ type, basePath }) {
                   </option>
                 ))}
               </select>
+            </label>
+          )}
+
+          {type === 'sales' && (
+            <label className="text-sm">
+              <span className="mb-1 block text-muted">Discount %</span>
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="0.01"
+                value={discountPct}
+                onChange={(e) => setDiscountPct(e.target.value)}
+                className="w-24 rounded border border-slate-300 px-3 py-2"
+              />
             </label>
           )}
         </div>
@@ -336,6 +359,18 @@ export function InvoiceForm({ type, basePath }) {
         <div className="flex justify-end">
           <table className="text-sm">
             <tbody>
+              {discountAmount > 0 && (
+                <>
+                  <tr>
+                    <td className="py-1 pr-4 text-muted">Gross subtotal</td>
+                    <td className="py-1 text-right">{totals.grossSubtotal.toFixed(2)}</td>
+                  </tr>
+                  <tr>
+                    <td className="py-1 pr-4 text-muted">Discount ({discountPct}%)</td>
+                    <td className="py-1 text-right">−{discountAmount.toFixed(2)}</td>
+                  </tr>
+                </>
+              )}
               <tr>
                 <td className="py-1 pr-4 text-muted">Subtotal</td>
                 <td className="py-1 text-right">{totals.subtotal.toFixed(2)}</td>

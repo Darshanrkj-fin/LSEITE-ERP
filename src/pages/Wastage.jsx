@@ -8,7 +8,7 @@ const REASONS = ['spoilage', 'expired', 'damaged', 'production_loss', 'preparati
 
 export function Wastage() {
   const { profile } = useAuth()
-  const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
 
   const [items, setItems] = useState([])
   const [entries, setEntries] = useState([])
@@ -21,6 +21,7 @@ export function Wastage() {
   const [wastageDate, setWastageDate] = useState(today())
   const [submitting, setSubmitting] = useState(false)
   const [info, setInfo] = useState(null)
+  const [busyId, setBusyId] = useState(null)
 
   const load = async () => {
     setLoading(true)
@@ -63,6 +64,19 @@ export function Wastage() {
     }
     setItemId('')
     setQuantity('')
+    load()
+  }
+
+  const handleCancel = async (entryId) => {
+    if (!window.confirm('Cancel this wastage entry? This restores the consumed stock and reverses the expense.')) return
+    setError(null)
+    setBusyId(entryId)
+    const { error: rpcError } = await supabase.rpc('cancel_wastage', { p_wastage_id: entryId })
+    setBusyId(null)
+    if (rpcError) {
+      setError(rpcError.message)
+      return
+    }
     load()
   }
 
@@ -152,6 +166,8 @@ export function Wastage() {
             <th className="py-2 pr-4">Quantity</th>
             <th className="py-2 pr-4">Reason</th>
             <th className="py-2 pr-4">Cost</th>
+            <th className="py-2 pr-4">Status</th>
+            {canEdit && <th className="py-2 pr-4">Actions</th>}
           </tr>
         </thead>
         <tbody>
@@ -162,11 +178,28 @@ export function Wastage() {
               <td className="py-2 pr-4">{entry.quantity}</td>
               <td className="py-2 pr-4 capitalize">{entry.reason.replace('_', ' ')}</td>
               <td className="py-2 pr-4">{entry.cost}</td>
+              <td className="py-2 pr-4">
+                <span className={entry.status === 'posted' ? 'text-ink' : 'text-clay'}>{entry.status}</span>
+              </td>
+              {canEdit && (
+                <td className="py-2 pr-4">
+                  {entry.status === 'posted' && (
+                    <button
+                      type="button"
+                      disabled={busyId === entry.id}
+                      onClick={() => handleCancel(entry.id)}
+                      className="text-clay hover:underline disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </td>
+              )}
             </tr>
           ))}
           {entries.length === 0 && (
             <tr>
-              <td colSpan={5} className="py-4 text-muted">
+              <td colSpan={canEdit ? 7 : 6} className="py-4 text-muted">
                 No wastage recorded yet.
               </td>
             </tr>

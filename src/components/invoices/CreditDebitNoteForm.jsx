@@ -11,6 +11,7 @@ export function CreditDebitNoteForm({ invoiceId, lineItems, creditNoteLines, onI
   const [reason, setReason] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
+  const [info, setInfo] = useState(null)
 
   const alreadyAdjusted = (lineId) =>
     creditNoteLines.filter((l) => l.invoice_line_item_id === lineId).reduce((sum, l) => sum + Number(l.quantity), 0)
@@ -35,6 +36,7 @@ export function CreditDebitNoteForm({ invoiceId, lineItems, creditNoteLines, onI
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError(null)
+    setInfo(null)
     const adjustments = Object.entries(selected)
       .filter(([, qty]) => Number(qty) > 0)
       .map(([invoice_line_item_id, qty]) => ({ invoice_line_item_id, quantity: Number(qty) }))
@@ -43,7 +45,7 @@ export function CreditDebitNoteForm({ invoiceId, lineItems, creditNoteLines, onI
       return
     }
     setSubmitting(true)
-    const { error: rpcError } = await supabase.rpc('post_manual_credit_debit_note', {
+    const { data: request, error: rpcError } = await supabase.rpc('submit_credit_debit_note', {
       p_invoice_id: invoiceId,
       p_reason: reason || null,
       p_line_adjustments: adjustments,
@@ -51,6 +53,10 @@ export function CreditDebitNoteForm({ invoiceId, lineItems, creditNoteLines, onI
     setSubmitting(false)
     if (rpcError) {
       setError(rpcError.message)
+      return
+    }
+    if (request.status === 'pending') {
+      setInfo(`Submitted for approval (needs: ${request.approval_chain.join(', ')}). See Approvals.`)
       return
     }
     onIssued()
@@ -67,6 +73,7 @@ export function CreditDebitNoteForm({ invoiceId, lineItems, creditNoteLines, onI
       </p>
 
       {error && <p className="mb-3 text-sm text-clay">{error}</p>}
+      {info && <p className="mb-3 text-sm text-green-600">{info}</p>}
 
       {adjustableLines.length === 0 ? (
         <p className="mb-3 text-sm text-muted">Every line on this invoice has already been fully adjusted.</p>

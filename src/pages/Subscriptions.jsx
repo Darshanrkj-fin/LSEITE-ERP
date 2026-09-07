@@ -10,7 +10,7 @@ const emptySubscription = { party_id: '', frequency: 'weekly', status: 'active',
 
 export function Subscriptions() {
   const { profile } = useAuth()
-  const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
 
   const [subscriptions, setSubscriptions] = useState([])
   const [parties, setParties] = useState([])

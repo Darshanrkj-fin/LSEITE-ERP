@@ -21,35 +21,47 @@ function toCsv(rows) {
 }
 
 export function PayrollRegister() {
-  const { session } = useAuth()
+  const { session, profile } = useAuth()
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
   const [month, setMonth] = useState(currentMonth())
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [downloadingId, setDownloadingId] = useState(null)
+  const [busyId, setBusyId] = useState(null)
+
+  const load = async () => {
+    setLoading(true)
+    setError(null)
+    const { data, error: fetchError } = await supabase
+      .from('payroll_runs')
+      .select('*, employees(name)')
+      .eq('run_month', `${month}-01`)
+      .order('created_at')
+    if (fetchError) setError(fetchError.message)
+    else setRows(data)
+    setLoading(false)
+  }
 
   useEffect(() => {
-    let cancelled = false
-    async function load() {
-      setLoading(true)
-      setError(null)
-      const { data, error: fetchError } = await supabase
-        .from('payroll_runs')
-        .select('*, employees(name)')
-        .eq('run_month', `${month}-01`)
-        .order('created_at')
-      if (cancelled) return
-      if (fetchError) setError(fetchError.message)
-      else setRows(data)
-      setLoading(false)
-    }
     load()
-    return () => {
-      cancelled = true
-    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [month])
 
-  const totals = rows.reduce(
+  const handleReverse = async (runId) => {
+    if (!window.confirm('Reverse this payroll run? This posts an opposite journal entry and frees the employee/month for a corrected re-run.')) return
+    setError(null)
+    setBusyId(runId)
+    const { error: rpcError } = await supabase.rpc('reverse_payroll_run', { p_payroll_run_id: runId })
+    setBusyId(null)
+    if (rpcError) {
+      setError(rpcError.message)
+      return
+    }
+    load()
+  }
+
+  const totals = rows.filter((r) => r.status === 'posted').reduce(
     (acc, r) => ({
       gross: acc.gross + r.gross_salary,
       deductions: acc.deductions + r.total_deductions,
@@ -128,7 +140,9 @@ export function PayrollRegister() {
               <th className="py-2 pr-4">Other</th>
               <th className="py-2 pr-4">Total deductions</th>
               <th className="py-2 pr-4">Net pay</th>
+              <th className="py-2 pr-4">Status</th>
               <th className="py-2 pr-4">Payslip</th>
+              {canEdit && <th className="py-2 pr-4">Actions</th>}
             </tr>
           </thead>
           <tbody>
@@ -143,6 +157,9 @@ export function PayrollRegister() {
                 <td className="py-2 pr-4">{r.total_deductions}</td>
                 <td className="py-2 pr-4">{r.net_pay}</td>
                 <td className="py-2 pr-4">
+                  <span className={r.status === 'posted' ? 'text-ink' : 'text-clay'}>{r.status}</span>
+                </td>
+                <td className="py-2 pr-4">
                   <button
                     onClick={() => handleDownloadPayslip(r.id)}
                     disabled={downloadingId === r.id}
@@ -151,11 +168,25 @@ export function PayrollRegister() {
                     {downloadingId === r.id ? 'Preparing…' : 'Download'}
                   </button>
                 </td>
+                {canEdit && (
+                  <td className="py-2 pr-4">
+                    {r.status === 'posted' && (
+                      <button
+                        type="button"
+                        disabled={busyId === r.id}
+                        onClick={() => handleReverse(r.id)}
+                        className="text-clay hover:underline disabled:opacity-50"
+                      >
+                        Reverse
+                      </button>
+                    )}
+                  </td>
+                )}
               </tr>
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={9} className="py-4 text-muted">
+                <td colSpan={canEdit ? 11 : 10} className="py-4 text-muted">
                   No payroll runs for this month.
                 </td>
               </tr>
@@ -166,7 +197,7 @@ export function PayrollRegister() {
               </td>
               <td className="py-2 pr-4">{totals.deductions.toFixed(2)}</td>
               <td className="py-2 pr-4">{totals.net.toFixed(2)}</td>
-              <td className="py-2 pr-4"></td>
+              <td className="py-2 pr-4" colSpan={canEdit ? 3 : 2}></td>
             </tr>
           </tbody>
         </table>

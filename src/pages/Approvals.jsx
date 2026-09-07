@@ -10,12 +10,20 @@ const ENTITY_LABELS = {
   project_invoice: 'Project invoice',
   expense_claim: 'Expense claim',
   access_request: 'Access request',
+  sales_invoice_discount: 'Sales invoice discount',
+  credit_debit_note: 'Credit/debit note',
+  purchase_request: 'Purchase request',
+  production_entry: 'Production entry',
+  bank_reconciliation: 'Bank reconciliation',
+  gst_return: 'GST return',
+  tds_return: 'TDS return',
+  stock_transfer: 'Stock transfer',
 }
 
 export function Approvals() {
   const { profile } = useAuth()
+  const myRoles = profile?.app_roles ?? []
   const [requests, setRequests] = useState([])
-  const [myRoles, setMyRoles] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [busyId, setBusyId] = useState(null)
@@ -23,16 +31,12 @@ export function Approvals() {
 
   const load = async () => {
     setLoading(true)
-    const [{ data: reqRows, error: fetchError }, { data: roleRows }] = await Promise.all([
-      supabase
-        .from('approval_requests')
-        .select('*, requested_by:users(full_name)')
-        .order('created_at', { ascending: false }),
-      supabase.from('user_app_roles').select('app_role').eq('user_id', profile.id),
-    ])
+    const { data: reqRows, error: fetchError } = await supabase
+      .from('approval_requests')
+      .select('*, requested_by:users(full_name)')
+      .order('created_at', { ascending: false })
     if (fetchError) setError(fetchError.message)
     else setRequests(reqRows ?? [])
-    setMyRoles((roleRows ?? []).map((r) => r.app_role))
     setLoading(false)
   }
 

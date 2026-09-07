@@ -7,7 +7,7 @@ const today = () => new Date().toISOString().slice(0, 10)
 
 export function PaymentsSection({ invoice }) {
   const { profile } = useAuth()
-  const canEdit = profile?.role === 'admin' || profile?.role === 'accountant'
+  const canEdit = profile?.is_admin || profile?.app_roles?.includes('accountant')
 
   const [payments, setPayments] = useState([])
   const [balance, setBalance] = useState(null)
